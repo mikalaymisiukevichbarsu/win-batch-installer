@@ -9,7 +9,7 @@ export default async function handler(req, res) {
 
   const lines = [];
 
-  // 1. Функция скачивания с прогрессом
+  // --- ФУНКЦИЯ СКАЧИВАНИЯ ---
   lines.push('function Download-WithProgress {');
   lines.push('    param ([string]$Url, [string]$OutputFile)');
   lines.push('    $request = [System.Net.HttpWebRequest]::Create($Url)');
@@ -35,71 +35,108 @@ export default async function handler(req, res) {
   lines.push('}');
   lines.push('');
 
-  // 2. Загрузка сборок WinForms
-  lines.push('Add-Type -AssemblyName System.Windows.Forms');
-  lines.push('Add-Type -AssemblyName System.Drawing');
+  // --- ИНИЦИАЛИЗАЦИЯ GUI ---
+  lines.push('[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null');
+  lines.push('[System.Reflection.Assembly]::LoadWithPartialName("System.Drawing") | Out-Null');
   lines.push('');
-
-  // 3. Создание формы
+  
   lines.push('$form = New-Object System.Windows.Forms.Form');
-  lines.push('$form.Text = "Win Batch Installer"');
-  lines.push('$form.Size = New-Object System.Drawing.Size(500, 600)');
+  lines.push('$form.Text = "Win Batch Installer v1.3"');
+  lines.push('$form.Size = New-Object System.Drawing.Size(600, 700)');
   lines.push('$form.StartPosition = "CenterScreen"');
   lines.push('$form.FormBorderStyle = "FixedDialog"');
   lines.push('$form.MaximizeBox = $false');
+  lines.push('$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)');
   lines.push('');
 
-  // 4. Элементы управления
-  lines.push('$label = New-Object System.Windows.Forms.Label');
-  lines.push('$label.Text = "Select programs to install:"');
-  lines.push('$label.Location = New-Object System.Drawing.Point(10, 10)');
-  lines.push('$label.AutoSize = $true');
-  lines.push('$form.Controls.Add($label)');
+  // Заголовок
+  lines.push('$lblTitle = New-Object System.Windows.Forms.Label');
+  lines.push('$lblTitle.Text = "Select programs to install:"');
+  lines.push('$lblTitle.Location = New-Object System.Drawing.Point(15, 15)');
+  lines.push('$lblTitle.AutoSize = $true');
+  lines.push('$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)');
+  lines.push('$form.Controls.Add($lblTitle)');
   lines.push('');
 
+  // Панель с чекбоксами
   lines.push('$flowPanel = New-Object System.Windows.Forms.FlowLayoutPanel');
-  lines.push('$flowPanel.Location = New-Object System.Drawing.Point(10, 40)');
-  lines.push('$flowPanel.Size = New-Object System.Drawing.Size(460, 450)');
+  lines.push('$flowPanel.Location = New-Object System.Drawing.Point(15, 45)');
+  lines.push('$flowPanel.Size = New-Object System.Drawing.Size(550, 480)');
   lines.push('$flowPanel.AutoScroll = $true');
+  lines.push('$flowPanel.BorderStyle = "FixedSingle"');
+  lines.push('$flowPanel.Padding = New-Object System.Windows.Forms.Padding(5)');
   lines.push('$form.Controls.Add($flowPanel)');
+  lines.push('');
+
+  // Поле пути и кнопка обзора
+  lines.push('$lblPath = New-Object System.Windows.Forms.Label');
+  lines.push('$lblPath.Text = "Installation path:"');
+  lines.push('$lblPath.Location = New-Object System.Drawing.Point(15, 540)');
+  lines.push('$lblPath.AutoSize = $true');
+  lines.push('$form.Controls.Add($lblPath)');
   lines.push('');
 
   lines.push('$txtPath = New-Object System.Windows.Forms.TextBox');
   lines.push('$txtPath.Text = "C:\\\\Programs"');
-  lines.push('$txtPath.Location = New-Object System.Drawing.Point(10, 500)');
-  lines.push('$txtPath.Size = New-Object System.Drawing.Size(300, 30)');
+  lines.push('$txtPath.Location = New-Object System.Drawing.Point(15, 560)');
+  lines.push('$txtPath.Size = New-Object System.Drawing.Size(400, 30)');
   lines.push('$form.Controls.Add($txtPath)');
   lines.push('');
 
+  lines.push('$btnBrowse = New-Object System.Windows.Forms.Button');
+  lines.push('$btnBrowse.Text = "Browse..."');
+  lines.push('$btnBrowse.Location = New-Object System.Drawing.Point(425, 558)');
+  lines.push('$btnBrowse.Size = New-Object System.Drawing.Size(140, 32)');
+  lines.push('$form.Controls.Add($btnBrowse)');
+  lines.push('');
+
+  // Кнопка установки
   lines.push('$btnInstall = New-Object System.Windows.Forms.Button');
-  lines.push('$btnInstall.Text = "Install Selected"');
-  lines.push('$btnInstall.Location = New-Object System.Drawing.Point(320, 500)');
-  lines.push('$btnInstall.Size = New-Object System.Drawing.Size(150, 30)');
+  lines.push('$btnInstall.Text = "Install Selected Programs"');
+  lines.push('$btnInstall.Location = New-Object System.Drawing.Point(15, 610)');
+  lines.push('$btnInstall.Size = New-Object System.Drawing.Size(550, 40)');
+  lines.push('$btnInstall.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)');
+  lines.push('$btnInstall.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)');
+  lines.push('$btnInstall.ForeColor = [System.Drawing.Color]::White');
+  lines.push('$btnInstall.FlatStyle = "Flat"');
   lines.push('$form.Controls.Add($btnInstall)');
   lines.push('');
 
-  // 5. Загрузка программ из API
+  // --- ЛОГИКА ЗАГРУЗКИ ПРОГРАММ ---
   lines.push('try {');
   lines.push(`    $programs = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing`);
+  lines.push('    if ($programs.Count -eq 0) { throw "No programs found in database." }');
   lines.push('    foreach ($p in $programs) {');
   lines.push('        $cb = New-Object System.Windows.Forms.CheckBox');
   lines.push('        $cb.Text = $p.name');
   lines.push('        $cb.Tag = $p');
   lines.push('        $cb.AutoSize = $true');
-  lines.push('        $cb.Margin = New-Object System.Windows.Forms.Padding(5)');
+  lines.push('        $cb.Margin = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)');
+  lines.push('        $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10)');
   lines.push('        $flowPanel.Controls.Add($cb)');
   lines.push('    }');
   lines.push('} catch {');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("Failed to load programs: $_", "Error")');
+  lines.push('    [System.Windows.Forms.MessageBox]::Show("Error loading programs: $_", "Connection Error", "OK", "Error")');
   lines.push('    exit');
   lines.push('}');
   lines.push('');
 
-  // 6. Обработчик кнопки установки
+  // --- ОБРАБОТЧИК КНОПКИ BROWSE ---
+  lines.push('$btnBrowse.Add_Click({');
+  lines.push('    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog');
+  lines.push('    $folderBrowser.Description = "Select installation folder"');
+  lines.push('    $folderBrowser.SelectedPath = $txtPath.Text');
+  lines.push('    if ($folderBrowser.ShowDialog() -eq "OK") {');
+  lines.push('        $txtPath.Text = $folderBrowser.SelectedPath');
+  lines.push('    }');
+  lines.push('});');
+  lines.push('');
+
+  // --- ОБРАБОТЧИК КНОПКИ INSTALL ---
   lines.push('$btnInstall.Add_Click({');
   lines.push('    $selected = $flowPanel.Controls | Where-Object { $_ -is [System.Windows.Forms.CheckBox] -and $_.Checked }');
   lines.push('    if ($selected.Count -eq 0) {');
-  lines.push('        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning")');
+  lines.push('        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning", "OK", "Warning")');
   lines.push('        return');
   lines.push('    }');
   lines.push('    ');
@@ -107,7 +144,7 @@ export default async function handler(req, res) {
   lines.push('    if (-not (Test-Path $installPath)) { New-Item -ItemType Directory -Path $installPath -Force | Out-Null }');
   lines.push('    ');
   lines.push('    $form.Enabled = $false');
-  lines.push('    $btnInstall.Text = "Installing..."');
+  lines.push('    $btnInstall.Text = "Installing... (Check console for progress)"');
   lines.push('    ');
   lines.push('    foreach ($cb in $selected) {');
   lines.push('        $prog = $cb.Tag');
@@ -116,6 +153,7 @@ export default async function handler(req, res) {
   lines.push('        $fileName = "$($prog.id)_installer.$ext"');
   lines.push('        $tempFile = "$env:TEMP\\\\$fileName"');
   lines.push('        ');
+  lines.push('        Write-Host "--------------------------------------------------"');
   lines.push('        Write-Host "Installing: $($prog.name)" -ForegroundColor Cyan');
   lines.push('        try {');
   lines.push('            Download-WithProgress -Url $url -OutputFile $tempFile');
@@ -126,15 +164,15 @@ export default async function handler(req, res) {
   lines.push('                Start-Process -FilePath $tempFile -ArgumentList $args -Wait -NoNewWindow');
   lines.push('            }');
   lines.push('            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue');
-  lines.push('            Write-Host "[OK] $($prog.name) installed." -ForegroundColor Green');
+  lines.push('            Write-Host "[OK] $($prog.name) installed successfully." -ForegroundColor Green');
   lines.push('        } catch {');
   lines.push('            Write-Host "[FAIL] $($prog.name): $_" -ForegroundColor Red');
   lines.push('        }');
   lines.push('    }');
   lines.push('    ');
-  lines.push('    $btnInstall.Text = "Install Selected"');
+  lines.push('    $btnInstall.Text = "Install Selected Programs"');
   lines.push('    $form.Enabled = $true');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("Installation complete!", "Done")');
+  lines.push('    [System.Windows.Forms.MessageBox]::Show("All selected programs have been processed!", "Done", "OK", "Information")');
   lines.push('});');
   lines.push('');
   lines.push('[void]$form.ShowDialog()');
@@ -142,6 +180,6 @@ export default async function handler(req, res) {
   const script = lines.join('\n');
   
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
   return res.status(200).send(script);
 }
