@@ -203,12 +203,12 @@ try {
             \$progressBar.IsIndeterminate = \$true
             Add-Log "   Запуск установщика..."
             
-            # ИСПРАВЛЕНИЕ 2: Безопасный запуск через cmd для обхода проблем с битностью и путями
+            # ИСПРАВЛЕНИЕ: Используем одинарные кавычки для CMD и экранируем их для PS
             \$rawArgs = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
+            \$safeArgs = \$rawArgs -replace "'", "''"
             
-            # Экранируем кавычки для cmd
-            \$safeArgs = \$rawArgs -replace '"', '\"'
-            \$cmdLine = "start /wait \"\" \"\$tempFile\" \$safeArgs"
+            # Формируем команду для CMD через одинарные кавычки PS
+            \$cmdLine = 'start /wait "" "' + \$tempFile + '" ' + \$safeArgs
             
             \$proc = Start-Process cmd -ArgumentList "/c \$cmdLine" -Wait -PassThru -NoNewWindow
             
