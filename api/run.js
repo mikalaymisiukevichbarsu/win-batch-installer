@@ -9,7 +9,7 @@ export default async function handler(req, res) {
 
   const lines = [];
 
-  // --- ФУНКЦИЯ СКАЧИВАНИЯ ---
+  // --- ФУНКЦИЯ СКАЧИВАНИЯ С ПРОГРЕССОМ ---
   lines.push('function Download-WithProgress {');
   lines.push('    param ([string]$Url, [string]$OutputFile)');
   lines.push('    $request = [System.Net.HttpWebRequest]::Create($Url)');
@@ -41,7 +41,7 @@ export default async function handler(req, res) {
   lines.push('');
   
   lines.push('$form = New-Object System.Windows.Forms.Form');
-  lines.push('$form.Text = "Win Batch Installer v1.3"');
+  lines.push('$form.Text = "Win Batch Installer v1.4"');
   lines.push('$form.Size = New-Object System.Drawing.Size(600, 700)');
   lines.push('$form.StartPosition = "CenterScreen"');
   lines.push('$form.FormBorderStyle = "FixedDialog"');
@@ -102,18 +102,30 @@ export default async function handler(req, res) {
   lines.push('$form.Controls.Add($btnInstall)');
   lines.push('');
 
-  // --- ЗАГРУЗКА ПРОГРАММ (ИСПРАВЛЕННАЯ) ---
+  // --- ЗАГРУЗКА ПРОГРАММ (С ИСПРАВЛЕНИЕМ КОДИРОВКИ) ---
   lines.push('try {');
-  lines.push(`    $response = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing`);
-  lines.push('    $programs = @($response)'); // Гарантия массива
+  lines.push(`    $uri = "${baseUrl}/api/programs"`);
+  lines.push('    # Скачиваем сырые байты, чтобы обойти проблемы с BOM');
+  lines.push('    $client = New-Object System.Net.WebClient');
+  lines.push('    $client.Encoding = [System.Text.Encoding]::UTF8');
+  lines.push('    $jsonString = $client.DownloadString($uri)');
   lines.push('    ');
-  lines.push('    if ($programs.Count -eq 0) { throw "Database is empty." }');
+  lines.push('    # Очищаем строку от BOM (незримых символов в начале)');
+  lines.push('    if ($jsonString.StartsWith([char]0xFEFF)) { $jsonString = $jsonString.Substring(1) }');
+  lines.push('    ');
+  lines.push('    # Парсим JSON вручную через JavaScriptSerializer для надежности');
+  lines.push('    Add-Type -AssemblyName System.Web.Extensions');
+  lines.push('    $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer');
+  lines.push('    $programs = $serializer.DeserializeObject($jsonString)');
+  lines.push('    ');
+  lines.push('    if (-not $programs -or $programs.Count -eq 0) { throw "API returned empty list." }');
   lines.push('    ');
   lines.push('    $loadedCount = 0');
   lines.push('    foreach ($p in $programs) {');
-  lines.push('        if ($p.name -and $p.url) {');
+  lines.push('        # Проверяем поля (в десериализованном объекте они могут быть null)');
+  lines.push('        if ($p.ContainsKey("name") -and $p.ContainsKey("url") -and $p["name"] -and $p["url"]) {');
   lines.push('            $cb = New-Object System.Windows.Forms.CheckBox');
-  lines.push('            $cb.Text = $p.name.ToString()');
+  lines.push('            $cb.Text = $p["name"].ToString()');
   lines.push('            $cb.Tag = $p');
   lines.push('            $cb.AutoSize = $true');
   lines.push('            $cb.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)');
@@ -123,7 +135,7 @@ export default async function handler(req, res) {
   lines.push('        }');
   lines.push('    }');
   lines.push('    ');
-  lines.push('    if ($loadedCount -eq 0) { throw "No valid programs found." }');
+  lines.push('    if ($loadedCount -eq 0) { throw "No valid programs with name/url found." }');
   lines.push('} catch {');
   lines.push('    [System.Windows.Forms.MessageBox]::Show("Error: $_", "Loading Failed", "OK", "Error")');
   lines.push('    exit');
@@ -157,25 +169,25 @@ export default async function handler(req, res) {
   lines.push('    ');
   lines.push('    foreach ($cb in $selected) {');
   lines.push('        $prog = $cb.Tag');
-  lines.push('        $url = $prog.url');
+  lines.push('        $url = $prog["url"]');
   lines.push("        $ext = [System.IO.Path]::GetExtension($url).TrimStart('.')");
-  lines.push('        $fileName = "$($prog.id)_installer.$ext"');
+  lines.push('        $fileName = "$($prog["id"])_installer.$ext"');
   lines.push('        $tempFile = "$env:TEMP\\\\$fileName"');
   lines.push('        ');
   lines.push('        Write-Host "--------------------------------------------------"');
-  lines.push('        Write-Host "Installing: $($prog.name)" -ForegroundColor Cyan');
+  lines.push('        Write-Host "Installing: $($prog["name"])" -ForegroundColor Cyan');
   lines.push('        try {');
   lines.push('            Download-WithProgress -Url $url -OutputFile $tempFile');
-  lines.push("            $args = $prog.args -replace '\\{PATH\\}', $installPath");
+  lines.push("            $args = $prog["args"] -replace '\\{PATH\\}', $installPath");
   lines.push('            if ($ext -eq \'msi\') {');
   lines.push('                Start-Process msiexec.exe -ArgumentList "/i \\"$tempFile\\" $args" -Wait -NoNewWindow');
   lines.push('            } else {');
   lines.push('                Start-Process -FilePath $tempFile -ArgumentList $args -Wait -NoNewWindow');
   lines.push('            }');
   lines.push('            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue');
-  lines.push('            Write-Host "[OK] $($prog.name) installed." -ForegroundColor Green');
+  lines.push('            Write-Host "[OK] $($prog["name"]) installed." -ForegroundColor Green');
   lines.push('        } catch {');
-  lines.push('            Write-Host "[FAIL] $($prog.name): $_" -ForegroundColor Red');
+  lines.push('            Write-Host "[FAIL] $($prog["name"]): $_" -ForegroundColor Red');
   lines.push('        }');
   lines.push('    }');
   lines.push('    ');
