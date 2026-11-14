@@ -1,206 +1,194 @@
 import { redis, ensureSeeded } from '../lib/db.js';
 
+// Безопасное экранирование строки для PowerShell
+function escapePS(str) {
+  if (!str) return '';
+  // Порядок важен: сначала бэктик, потом кавычки, потом доллар
+  return String(str)
+    .replace(/`/g, '``')
+    .replace(/"/g, '`"')
+    .replace(/\$/g, '`$');
+}
+
+// Упрощённая валидация пути
+function validatePath(rawPath) {
+  if (!rawPath || typeof rawPath !== 'string') {
+    return { error: 'Invalid installation path format.' };
+  }
+  
+  const trimmed = rawPath.trim();
+  if (!trimmed || trimmed.length > 200) {
+    return { error: 'Invalid installation path format.' };
+  }
+  
+  // Разрешаем только буквы диска или UNC-пути
+  const validPattern = /^[A-Za-z]:\\|^\\\\[a-zA-Z0-9]/;
+  if (!validPattern.test(trimmed)) {
+    return { error: 'Invalid installation path format. Use C:\\Apps or \\\\server\\share.' };
+  }
+  
+  // Проверяем недопустимые символы
+  const invalidChars = /[<>:"|?*]/;
+  if (invalidChars.test(trimmed)) {
+    return { error: 'Invalid installation path format.' };
+  }
+  
+  return { path: trimmed };
+}
+
+// Получение первого значения параметра (Vercel может вернуть массив)
+function getFirstParam(value) {
+  return Array.isArray(value) ? value[0] : value;
+}
+
 export default async function handler(req, res) {
-  await ensureSeeded();
+  try {
+    // Гарантируем наличие дефолтных программ
+    await ensureSeeded();
 
-  const baseUrl = process.env.VERCEL_URL 
-    ? `https://${process.env.VERCEL_URL}` 
-    : 'https://win-batch-installer.vercel.app';
+    const idsParam = getFirstParam(req.query.ids);
+    const pathParam = getFirstParam(req.query.path);
 
-  const lines = [];
+    // Заголовки ответа
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-  // --- ФУНКЦИЯ СКАЧИВАНИЯ С ПРОГРЕССОМ ---
-  lines.push('function Download-WithProgress {');
-  lines.push('    param ([string]$Url, [string]$OutputFile)');
-  lines.push('    $request = [System.Net.HttpWebRequest]::Create($Url)');
-  lines.push('    $response = $request.GetResponse()');
-  lines.push('    $totalLength = $response.ContentLength');
-  lines.push('    $stream = $response.GetResponseStream()');
-  lines.push('    $fileStream = [System.IO.File]::Create($OutputFile)');
-  lines.push('    $buffer = New-Object byte[] 8192');
-  lines.push('    $bytesRead = 0; $totalBytesRead = 0');
-  lines.push('    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()');
-  lines.push('    while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {');
-  lines.push('        $fileStream.Write($buffer, 0, $bytesRead)');
-  lines.push('        $totalBytesRead += $bytesRead');
-  lines.push('        $percent = [math]::Round(($totalBytesRead / $totalLength) * 100, 1)');
-  lines.push('        $speed = [math]::Round(($totalBytesRead / $stopwatch.Elapsed.TotalSeconds / 1MB), 2)');
-  lines.push('        $downloaded = [math]::Round($totalBytesRead / 1MB, 2)');
-  lines.push('        $total = [math]::Round($totalLength / 1MB, 2)');
-  lines.push('        Write-Host "\\rDownloading: $percent% | Speed: ${speed} MB/s | Size: ${downloaded} MB / ${total} MB" -NoNewline -ForegroundColor Yellow');
-  lines.push('    }');
-  lines.push('    $fileStream.Close(); $stream.Close(); $response.Close(); $stopwatch.Stop()');
-  lines.push('    Write-Host ""');
-  lines.push('    Write-Host "Download completed." -ForegroundColor Green');
-  lines.push('}');
-  lines.push('');
+    // Валидация параметров
+    if (!idsParam || !pathParam) {
+      return res.status(400).send(
+        'Write-Host "[ERROR] Missing parameters. Use: ?ids=app1,app2&path=C:\\Apps" -ForegroundColor Red'
+      );
+    }
 
-  // --- ИНИЦИАЛИЗАЦИЯ GUI ---
-  lines.push('[System.Reflection.Assembly]::LoadWithPartialName("System.Windows.Forms") | Out-Null');
-  lines.push('[System.Reflection.Assembly]::LoadWithPartialName("System.Drawing") | Out-Null');
-  lines.push('');
-  
-  lines.push('$form = New-Object System.Windows.Forms.Form');
-  lines.push('$form.Text = "Win Batch Installer v1.4"');
-  lines.push('$form.Size = New-Object System.Drawing.Size(600, 700)');
-  lines.push('$form.StartPosition = "CenterScreen"');
-  lines.push('$form.FormBorderStyle = "FixedDialog"');
-  lines.push('$form.MaximizeBox = $false');
-  lines.push('$form.Font = New-Object System.Drawing.Font("Segoe UI", 9)');
-  lines.push('');
+    // Валидация пути установки
+    const pathValidation = validatePath(pathParam);
+    if (pathValidation.error) {
+      return res.status(400).send(
+        `Write-Host "[ERROR] ${pathValidation.error}" -ForegroundColor Red`
+      );
+    }
+    
+    const installPath = pathValidation.path;
+    const escapedInstallPath = escapePS(installPath);
 
-  // Заголовок
-  lines.push('$lblTitle = New-Object System.Windows.Forms.Label');
-  lines.push('$lblTitle.Text = "Select programs to install:"');
-  lines.push('$lblTitle.Location = New-Object System.Drawing.Point(15, 15)');
-  lines.push('$lblTitle.AutoSize = $true');
-  lines.push('$lblTitle.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)');
-  lines.push('$form.Controls.Add($lblTitle)');
-  lines.push('');
+    // Получаем список ID программ
+    const idList = String(idsParam)
+      .split(',')
+      .map(id => id.trim())
+      .filter(Boolean);
 
-  // Панель с чекбоксами
-  lines.push('$flowPanel = New-Object System.Windows.Forms.FlowLayoutPanel');
-  lines.push('$flowPanel.Location = New-Object System.Drawing.Point(15, 45)');
-  lines.push('$flowPanel.Size = New-Object System.Drawing.Size(550, 480)');
-  lines.push('$flowPanel.AutoScroll = $true');
-  lines.push('$flowPanel.BorderStyle = "FixedSingle"');
-  lines.push('$flowPanel.Padding = New-Object System.Windows.Forms.Padding(5)');
-  lines.push('$form.Controls.Add($flowPanel)');
-  lines.push('');
+    if (idList.length === 0) {
+      return res.status(400).send(
+        'Write-Host "[ERROR] No program IDs provided." -ForegroundColor Red'
+      );
+    }
 
-  // Поле пути и кнопка обзора
-  lines.push('$lblPath = New-Object System.Windows.Forms.Label');
-  lines.push('$lblPath.Text = "Installation path:"');
-  lines.push('$lblPath.Location = New-Object System.Drawing.Point(15, 540)');
-  lines.push('$lblPath.AutoSize = $true');
-  lines.push('$form.Controls.Add($lblPath)');
-  lines.push('');
+    // Загружаем программы из Redis
+    const programs = [];
+    for (const id of idList) {
+      try {
+        const program = await redis.hgetall(`program:${id}`);
+        if (program && program.url && program.name) {
+          programs.push({
+            id: id,
+            name: program.name,
+            url: program.url,
+            args: program.args || ''
+          });
+        }
+      } catch (err) {
+        console.error(`Error loading program ${id}:`, err);
+      }
+    }
 
-  lines.push('$txtPath = New-Object System.Windows.Forms.TextBox');
-  lines.push('$txtPath.Text = "C:\\\\Programs"');
-  lines.push('$txtPath.Location = New-Object System.Drawing.Point(15, 560)');
-  lines.push('$txtPath.Size = New-Object System.Drawing.Size(400, 30)');
-  lines.push('$form.Controls.Add($txtPath)');
-  lines.push('');
+    if (programs.length === 0) {
+      return res.send(
+        'Write-Host "[ERROR] No valid programs found for provided IDs." -ForegroundColor Red'
+      );
+    }
 
-  lines.push('$btnBrowse = New-Object System.Windows.Forms.Button');
-  lines.push('$btnBrowse.Text = "Browse..."');
-  lines.push('$btnBrowse.Location = New-Object System.Drawing.Point(425, 558)');
-  lines.push('$btnBrowse.Size = New-Object System.Drawing.Size(140, 32)');
-  lines.push('$form.Controls.Add($btnBrowse)');
-  lines.push('');
+    // Генерация PowerShell скрипта через массив строк
+    const lines = [];
+    
+    // Заголовок скрипта
+    lines.push('# Win Batch Installer Script v1.2.0');
+    lines.push('[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12');
+    lines.push('$ErrorActionPreference = "Stop"');
+    lines.push('');
+    
+    // Установка корневой папки
+    lines.push(`$InstallRoot = "${escapedInstallPath}"`);
+    lines.push('if (-not (Test-Path $InstallRoot)) {');
+    lines.push('    New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null');
+    lines.push('}');
+    lines.push('');
 
-  // Кнопка установки
-  lines.push('$btnInstall = New-Object System.Windows.Forms.Button');
-  lines.push('$btnInstall.Text = "Install Selected Programs"');
-  lines.push('$btnInstall.Location = New-Object System.Drawing.Point(15, 610)');
-  lines.push('$btnInstall.Size = New-Object System.Drawing.Size(550, 40)');
-  lines.push('$btnInstall.Font = New-Object System.Drawing.Font("Segoe UI", 10, [System.Drawing.FontStyle]::Bold)');
-  lines.push('$btnInstall.BackColor = [System.Drawing.Color]::FromArgb(0, 120, 215)');
-  lines.push('$btnInstall.ForeColor = [System.Drawing.Color]::White');
-  lines.push('$btnInstall.FlatStyle = "Flat"');
-  lines.push('$form.Controls.Add($btnInstall)');
-  lines.push('');
+    // Генерация кода для каждой программы
+    for (const program of programs) {
+      const safeName = escapePS(program.name);
+      const safeUrl = escapePS(program.url);
+      
+      // Определяем расширение файла
+      const urlWithoutQuery = program.url.split('?')[0].split('#')[0];
+      const ext = urlWithoutQuery.split('.').pop().toLowerCase();
+      const isMSI = ext === 'msi';
+      const fileExt = isMSI ? 'msi' : 'exe';
+      
+      // Безопасное имя файла (только alphanumeric + _ + -)
+      const safeId = String(program.id).replace(/[^A-Za-z0-9._-]/g, '_');
+      const fileName = `${safeId}_installer.${fileExt}`;
+      
+      // Путь к временному файлу
+      const tempFilePath = `$env:TEMP\\${fileName}`;
+      
+      // Аргументы установки
+      let installArgs = '';
+      if (isMSI) {
+        const baseArgs = program.args || '/qn /norestart';
+        installArgs = baseArgs.replace(/\{PATH\}/g, '$InstallRoot');
+      } else {
+        const baseArgs = program.args || '/SILENT';
+        installArgs = baseArgs.replace(/\{PATH\}/g, '$InstallRoot');
+      }
+      const escapedArgs = escapePS(installArgs);
 
-  // --- ЗАГРУЗКА ПРОГРАММ (С ИСПРАВЛЕНИЕМ КОДИРОВКИ) ---
-  lines.push('try {');
-  lines.push(`    $uri = "${baseUrl}/api/programs"`);
-  lines.push('    # Скачиваем сырые байты, чтобы обойти проблемы с BOM');
-  lines.push('    $client = New-Object System.Net.WebClient');
-  lines.push('    $client.Encoding = [System.Text.Encoding]::UTF8');
-  lines.push('    $jsonString = $client.DownloadString($uri)');
-  lines.push('    ');
-  lines.push('    # Очищаем строку от BOM (незримых символов в начале)');
-  lines.push('    if ($jsonString.StartsWith([char]0xFEFF)) { $jsonString = $jsonString.Substring(1) }');
-  lines.push('    ');
-  lines.push('    # Парсим JSON вручную через JavaScriptSerializer для надежности');
-  lines.push('    Add-Type -AssemblyName System.Web.Extensions');
-  lines.push('    $serializer = New-Object System.Web.Script.Serialization.JavaScriptSerializer');
-  lines.push('    $programs = $serializer.DeserializeObject($jsonString)');
-  lines.push('    ');
-  lines.push('    if (-not $programs -or $programs.Count -eq 0) { throw "API returned empty list." }');
-  lines.push('    ');
-  lines.push('    $loadedCount = 0');
-  lines.push('    foreach ($p in $programs) {');
-  lines.push('        # Проверяем поля (в десериализованном объекте они могут быть null)');
-  lines.push('        if ($p.ContainsKey("name") -and $p.ContainsKey("url") -and $p["name"] -and $p["url"]) {');
-  lines.push('            $cb = New-Object System.Windows.Forms.CheckBox');
-  lines.push('            $cb.Text = $p["name"].ToString()');
-  lines.push('            $cb.Tag = $p');
-  lines.push('            $cb.AutoSize = $true');
-  lines.push('            $cb.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)');
-  lines.push('            $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10)');
-  lines.push('            $flowPanel.Controls.Add($cb)');
-  lines.push('            $loadedCount++');
-  lines.push('        }');
-  lines.push('    }');
-  lines.push('    ');
-  lines.push('    if ($loadedCount -eq 0) { throw "No valid programs with name/url found." }');
-  lines.push('} catch {');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("Error: $_", "Loading Failed", "OK", "Error")');
-  lines.push('    exit');
-  lines.push('}');
-  lines.push('');
+      // Код установки программы
+      lines.push(`Write-Host "Downloading ${safeName}..." -ForegroundColor Cyan`);
+      lines.push('try {');
+      lines.push(`    Invoke-WebRequest -Uri "${safeUrl}" -OutFile "${tempFilePath}" -UseBasicParsing`);
+      lines.push(`    Write-Host "Installing ${safeName}..." -ForegroundColor Yellow`);
+      
+      if (isMSI) {
+        lines.push(`    $proc = Start-Process msiexec.exe -ArgumentList "/i \"${tempFilePath}\" ${escapedArgs}" -Wait -PassThru -NoNewWindow`);
+      } else {
+        lines.push(`    $proc = Start-Process -FilePath "${tempFilePath}" -ArgumentList "${escapedArgs}" -Wait -PassThru -NoNewWindow`);
+      }
+      
+      lines.push(`    Remove-Item "${tempFilePath}" -Force -ErrorAction SilentlyContinue`);
+      lines.push('    if ($proc.ExitCode -eq 0) {');
+      lines.push(`        Write-Host "[OK] ${safeName} installed successfully!" -ForegroundColor Green`);
+      lines.push('    } else {');
+      lines.push(`        Write-Host "[FAIL] ${safeName} exited with code $($proc.ExitCode)" -ForegroundColor Red`);
+      lines.push('    }');
+      lines.push('} catch {');
+      lines.push(`    Write-Host "[FAIL] ${safeName}: $_" -ForegroundColor Red`);
+      lines.push('}');
+      lines.push('');
+    }
 
-  // --- ОБРАБОТЧИК КНОПКИ BROWSE ---
-  lines.push('$btnBrowse.Add_Click({');
-  lines.push('    $folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog');
-  lines.push('    $folderBrowser.Description = "Select installation folder"');
-  lines.push('    $folderBrowser.SelectedPath = $txtPath.Text');
-  lines.push('    if ($folderBrowser.ShowDialog() -eq "OK") {');
-  lines.push('        $txtPath.Text = $folderBrowser.SelectedPath');
-  lines.push('    }');
-  lines.push('});');
-  lines.push('');
+    // Завершение скрипта
+    lines.push('Write-Host "`nAll tasks completed!" -ForegroundColor Green');
+    lines.push('if ([Environment]::UserInteractive) { Read-Host "Press Enter to exit" }');
 
-  // --- ОБРАБОТЧИК КНОПКИ INSTALL ---
-  lines.push('$btnInstall.Add_Click({');
-  lines.push('    $selected = $flowPanel.Controls | Where-Object { $_ -is [System.Windows.Forms.CheckBox] -and $_.Checked }');
-  lines.push('    if ($selected.Count -eq 0) {');
-  lines.push('        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning", "OK", "Warning")');
-  lines.push('        return');
-  lines.push('    }');
-  lines.push('    ');
-  lines.push('    $installPath = $txtPath.Text');
-  lines.push('    if (-not (Test-Path $installPath)) { New-Item -ItemType Directory -Path $installPath -Force | Out-Null }');
-  lines.push('    ');
-  lines.push('    $form.Enabled = $false');
-  lines.push('    $btnInstall.Text = "Installing... (Check console)"');
-  lines.push('    ');
-  lines.push('    foreach ($cb in $selected) {');
-  lines.push('        $prog = $cb.Tag');
-  lines.push('        $url = $prog["url"]');
-  lines.push("        $ext = [System.IO.Path]::GetExtension($url).TrimStart('.')");
-  lines.push('        $fileName = "$($prog["id"])_installer.$ext"');
-  lines.push('        $tempFile = "$env:TEMP\\\\$fileName"');
-  lines.push('        ');
-  lines.push('        Write-Host "--------------------------------------------------"');
-  lines.push('        Write-Host "Installing: $($prog["name"])" -ForegroundColor Cyan');
-  lines.push('        try {');
-  lines.push('            Download-WithProgress -Url $url -OutputFile $tempFile');
-  lines.push("            $args = $prog["args"] -replace '\\{PATH\\}', $installPath");
-  lines.push('            if ($ext -eq \'msi\') {');
-  lines.push('                Start-Process msiexec.exe -ArgumentList "/i \\"$tempFile\\" $args" -Wait -NoNewWindow');
-  lines.push('            } else {');
-  lines.push('                Start-Process -FilePath $tempFile -ArgumentList $args -Wait -NoNewWindow');
-  lines.push('            }');
-  lines.push('            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue');
-  lines.push('            Write-Host "[OK] $($prog["name"]) installed." -ForegroundColor Green');
-  lines.push('        } catch {');
-  lines.push('            Write-Host "[FAIL] $($prog["name"]): $_" -ForegroundColor Red');
-  lines.push('        }');
-  lines.push('    }');
-  lines.push('    ');
-  lines.push('    $btnInstall.Text = "Install Selected Programs"');
-  lines.push('    $form.Enabled = $true');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("Done!", "Complete", "OK", "Information")');
-  lines.push('});');
-  lines.push('');
-  lines.push('[void]$form.ShowDialog()');
+    // Объединяем все строки с переносами
+    const script = lines.join('\n');
+    
+    return res.status(200).send(script);
 
-  const script = lines.join('\n');
-  
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
-  return res.status(200).send(script);
+  } catch (error) {
+    console.error('Critical error in /api/run:', error);
+    return res.status(500).send(
+      'Write-Host "[ERROR] Server error occurred. Please try again later." -ForegroundColor Red'
+    );
+  }
 }
