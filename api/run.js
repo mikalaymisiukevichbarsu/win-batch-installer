@@ -269,6 +269,6 @@ $window.ShowDialog() | Out-Null
 return res.status(200).send(script);
 } catch (error) {
 console.error('Critical error in /api/run:', error);
-return res.status(500).send(Write-Host "[ERROR] Server error: ${error.message}" -ForegroundColor Red);
+return res.status(500).send(`Write-Host "[ERROR] Server error: ${error.message}" -ForegroundColor Red`);
 }
 }
