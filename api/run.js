@@ -10,11 +10,11 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-    // XAML разметка
+    // XAML с добавлением ProgressBar и TextBlock для лога
     const xaml = `
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Win Batch Installer" Height="550" Width="600"
+        Title="Win Batch Installer" Height="600" Width="600"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
         Background="#1e1e1e" Foreground="White" FontFamily="Segoe UI">
     
@@ -25,7 +25,6 @@ export default async function handler(req, res) {
             <Setter Property="Margin" Value="0,5,0,5"/>
             <Setter Property="Cursor" Value="Hand"/>
         </Style>
-        
         <Style TargetType="Button" x:Key="PrimaryButton">
             <Setter Property="Background" Value="#0078d4"/>
             <Setter Property="Foreground" Value="White"/>
@@ -57,10 +56,11 @@ export default async function handler(req, res) {
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Text="Выберите программы для установки" 
-                   FontSize="20" FontWeight="Bold" Margin="0,0,0,20" Foreground="#ffffff"/>
+        <TextBlock Text="Выберите программы" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,20">
             <StackPanel Name="ProgramsStack" />
@@ -72,25 +72,25 @@ export default async function handler(req, res) {
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="Auto"/>
             </Grid.ColumnDefinitions>
-            
             <TextBlock Text="Папка:" VerticalAlignment="Center" Margin="0,0,10,0" Foreground="#aaaaaa"/>
-            <TextBox Name="PathBox" Grid.Column="1" Text="C:\\Programs" 
-                     Background="#2d2d2d" Foreground="White" BorderBrush="#444" Padding="5"/>
-            <Button Name="BrowseBtn" Grid.Column="2" Content="..." Width="30" Margin="10,0,0,0" 
-                    Background="#333" Foreground="White" Cursor="Hand"/>
+            <TextBox Name="PathBox" Grid.Column="1" Text="C:\\Programs" Background="#2d2d2d" Foreground="White" BorderBrush="#444" Padding="5"/>
+            <Button Name="BrowseBtn" Grid.Column="2" Content="..." Width="30" Margin="10,0,0,0" Background="#333" Foreground="White" Cursor="Hand"/>
         </Grid>
 
-        <Button Name="InstallBtn" Grid.Row="3" Style="{StaticResource PrimaryButton}" 
-                Content="Установить выбранное" Margin="0,0,0,15"/>
+        <!-- Прогресс бар -->
+        <ProgressBar Name="ProgressBar" Grid.Row="3" Height="20" Minimum="0" Maximum="100" Margin="0,0,0,10" Visibility="Collapsed"/>
+        
+        <!-- Лог путей -->
+        <TextBlock Name="LogText" Grid.Row="4" Text="" Foreground="#888" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
 
-        <TextBlock Name="StatusText" Grid.Row="4" Text="Готов к работе" 
-                   Foreground="#888" FontSize="12"/>
+        <Button Name="InstallBtn" Grid.Row="5" Style="{StaticResource PrimaryButton}" Content="Установить выбранное" Margin="0,0,0,15"/>
+        <TextBlock Name="StatusText" Grid.Row="6" Text="Готов к работе" Foreground="#888" FontSize="12"/>
     </Grid>
 </Window>
 `;
 
     const script = `
-# Win Batch Installer WPF GUI v1.4.1
+# Win Batch Installer WPF GUI v1.5.0
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -108,13 +108,25 @@ ${xaml}
 \$installBtn = \$window.FindName("InstallBtn")
 \$browseBtn = \$window.FindName("BrowseBtn")
 \$statusText = \$window.FindName("StatusText")
+\$progressBar = \$window.FindName("ProgressBar")
+\$logText = \$window.FindName("LogText")
 
 \$Global:ProgramsList = @()
 
-function Download-File {
+# Функция скачивания с прогрессом
+function Download-WithProgress {
     param ([string]\$Url, [string]\$OutFile)
+    
     \$wc = New-Object System.Net.WebClient
+    \$wc.Headers.Add("User-Agent", "Mozilla/5.0")
+    
+    Register-ObjectEvent -InputObject \$wc -EventName DownloadProgressChanged -Action {
+        \$progressBar.Value = \$EventArgs.ProgressPercentage
+        [System.Windows.Forms.Application]::DoEvents()
+    } | Out-Null
+    
     \$wc.DownloadFile(\$Url, \$OutFile)
+    \$wc.Dispose()
 }
 
 \$statusText.Text = "Подключение к серверу..."
@@ -134,7 +146,6 @@ try {
     \$statusText.Foreground = "#ff5555"
 }
 
-# Исправленная логика Browse
 \$browseBtn.Add_Click({
     \$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
     if (\$folderBrowser.ShowDialog() -eq "OK") {
@@ -142,7 +153,6 @@ try {
     }
 })
 
-# Исправленная логика Install (убран пробел перед .IsChecked)
 \$installBtn.Add_Click({
     \$selected = \$programsStack.Children | Where-Object { \$_ -is [System.Windows.Controls.CheckBox] -and \$_.IsChecked }
     
@@ -157,35 +167,53 @@ try {
     }
 
     \$installBtn.IsEnabled = \$false
-    \$statusText.Foreground = "#ffffff"
+    \$progressBar.Visibility = "Visible"
+    \$logText.Text = ""
 
     foreach (\$item in \$selected) {
         \$prog = \$item.Tag
-        \$statusText.Text = "Установка: \$(\$prog.name)..."
+        \$statusText.Text = "Скачивание: \$(\$prog.name)..."
+        \$progressBar.Value = 0
         
         \$fileName = Split-Path \$prog.url -Leaf
         \$tempFile = Join-Path \$env:TEMP \$fileName
         
+        # Показываем путь в логе
+        \$logText.Text += "Загрузка: \$tempFile \`n"
+        \$window.UpdateLayout()
+        [System.Windows.Forms.Application]::DoEvents()
+
         try {
-            Download-File -Url \$prog.url -OutFile \$tempFile
+            Download-WithProgress -Url \$prog.url -OutFile \$tempFile
+            
+            \$statusText.Text = "Установка: \$(\$prog.name)..."
+            \$progressBar.IsIndeterminate = \$true
             
             \$args = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
             \$proc = Start-Process -FilePath \$tempFile -ArgumentList \$args -Wait -PassThru -NoNewWindow
             
             Remove-Item \$tempFile -Force -ErrorAction SilentlyContinue
             
+            \$progressBar.IsIndeterminate = \$false
+            \$progressBar.Value = 100
+            
             if (\$proc.ExitCode -eq 0) {
                 \$statusText.Text = "[OK] \$(\$prog.name) установлена."
+                \$logText.Text += "[OK] \$(\$prog.name) установлена. \`n"
             } else {
                 \$statusText.Text = "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode))"
+                \$logText.Text += "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode)) \`n"
             }
         } catch {
             \$statusText.Text = "[ERROR] \$(\$prog.name): \$_"
+            \$logText.Text += "[ERROR] \$(\$prog.name): \$_ \`n"
         }
+        [System.Windows.Forms.Application]::DoEvents()
     }
 
     \$statusText.Text = "Все задачи завершены!"
     \$installBtn.IsEnabled = \$true
+    \$progressBar.Visibility = "Collapsed"
     [System.Windows.MessageBox]::Show("Установка завершена!", "Готово", "OK", "Information")
 })
 
