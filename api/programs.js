@@ -29,6 +29,8 @@ export default async function handler(req, res) {
   await ensureSeeded();
   const { method } = req;
   const adminPass = process.env.ADMIN_PASSWORD;
+  console.log('DEBUG ADMIN_PASS:', adminPass); // <-- ДОБАВИТЬ ЭТУ СТРОКУ
+  console.log('DEBUG AUTH_HEADER:', req.headers.authorization); // <-- И ЭТУ
 
   const isAuthenticated = () => {
     const authHeader = req.headers.authorization;
