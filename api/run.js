@@ -10,7 +10,6 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-    // XAML с добавлением ProgressBar и TextBlock для лога
     const xaml = `
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -57,7 +56,6 @@ export default async function handler(req, res) {
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
-            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
         <TextBlock Text="Выберите программы" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
@@ -77,11 +75,11 @@ export default async function handler(req, res) {
             <Button Name="BrowseBtn" Grid.Column="2" Content="..." Width="30" Margin="10,0,0,0" Background="#333" Foreground="White" Cursor="Hand"/>
         </Grid>
 
-        <!-- Прогресс бар -->
         <ProgressBar Name="ProgressBar" Grid.Row="3" Height="20" Minimum="0" Maximum="100" Margin="0,0,0,10" Visibility="Collapsed"/>
         
-        <!-- Лог путей -->
-        <TextBlock Name="LogText" Grid.Row="4" Text="" Foreground="#888" FontSize="11" Margin="0,0,0,10" TextWrapping="Wrap"/>
+        <ScrollViewer Grid.Row="4" Height="100" VerticalScrollBarVisibility="Auto" Margin="0,0,0,10">
+            <TextBlock Name="LogText" Text="" Foreground="#888" FontSize="11" TextWrapping="Wrap"/>
+        </ScrollViewer>
 
         <Button Name="InstallBtn" Grid.Row="5" Style="{StaticResource PrimaryButton}" Content="Установить выбранное" Margin="0,0,0,15"/>
         <TextBlock Name="StatusText" Grid.Row="6" Text="Готов к работе" Foreground="#888" FontSize="12"/>
@@ -90,7 +88,7 @@ export default async function handler(req, res) {
 `;
 
     const script = `
-# Win Batch Installer WPF GUI v1.5.0
+# Win Batch Installer WPF GUI v1.6.0
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -113,10 +111,15 @@ ${xaml}
 
 \$Global:ProgramsList = @()
 
-# Функция скачивания с прогрессом
+function Add-Log {
+    param ([string]\$Message)
+    \$logText.Text += "\$Message \`n"
+    \$logText.ScrollToEnd()
+    [System.Windows.Forms.Application]::DoEvents()
+}
+
 function Download-WithProgress {
     param ([string]\$Url, [string]\$OutFile)
-    
     \$wc = New-Object System.Net.WebClient
     \$wc.Headers.Add("User-Agent", "Mozilla/5.0")
     
@@ -161,9 +164,20 @@ try {
         return
     }
 
-    \$installPath = \$pathBox.Text
+    # ИСПРАВЛЕНИЕ 1: Явное получение и проверка пути
+    \$installPath = \$pathBox.Text.Trim()
+    if (-not \$installPath) { \$installPath = "C:\\Programs" }
+    
+    Add-Log "Целевая папка установки: \$installPath"
+    
     if (-not (Test-Path \$installPath)) {
-        New-Item -ItemType Directory -Path \$installPath -Force | Out-Null
+        try {
+            New-Item -ItemType Directory -Path \$installPath -Force | Out-Null
+            Add-Log "Папка создана."
+        } catch {
+            Add-Log "[ERROR] Не удалось создать папку: \$_"
+            return
+        }
     }
 
     \$installBtn.IsEnabled = \$false
@@ -172,25 +186,31 @@ try {
 
     foreach (\$item in \$selected) {
         \$prog = \$item.Tag
-        \$statusText.Text = "Скачивание: \$(\$prog.name)..."
+        \$statusText.Text = "Обработка: \$(\$prog.name)..."
         \$progressBar.Value = 0
         
         \$fileName = Split-Path \$prog.url -Leaf
+        if (-not \$fileName) { \$fileName = "installer.exe" }
         \$tempFile = Join-Path \$env:TEMP \$fileName
         
-        # Показываем путь в логе
-        \$logText.Text += "Загрузка: \$tempFile \`n"
-        \$window.UpdateLayout()
-        [System.Windows.Forms.Application]::DoEvents()
+        Add-Log ">> Скачивание \$(\$prog.name)..."
+        Add-Log "   Временный файл: \$tempFile"
 
         try {
             Download-WithProgress -Url \$prog.url -OutFile \$tempFile
             
             \$statusText.Text = "Установка: \$(\$prog.name)..."
             \$progressBar.IsIndeterminate = \$true
+            Add-Log "   Запуск установщика..."
             
-            \$args = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
-            \$proc = Start-Process -FilePath \$tempFile -ArgumentList \$args -Wait -PassThru -NoNewWindow
+            # ИСПРАВЛЕНИЕ 2: Безопасный запуск через cmd для обхода проблем с битностью и путями
+            \$rawArgs = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
+            
+            # Экранируем кавычки для cmd
+            \$safeArgs = \$rawArgs -replace '"', '\"'
+            \$cmdLine = "start /wait \"\" \"\$tempFile\" \$safeArgs"
+            
+            \$proc = Start-Process cmd -ArgumentList "/c \$cmdLine" -Wait -PassThru -NoNewWindow
             
             Remove-Item \$tempFile -Force -ErrorAction SilentlyContinue
             
@@ -198,15 +218,12 @@ try {
             \$progressBar.Value = 100
             
             if (\$proc.ExitCode -eq 0) {
-                \$statusText.Text = "[OK] \$(\$prog.name) установлена."
-                \$logText.Text += "[OK] \$(\$prog.name) установлена. \`n"
+                Add-Log "[OK] \$(\$prog.name) установлена в \$installPath"
             } else {
-                \$statusText.Text = "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode))"
-                \$logText.Text += "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode)) \`n"
+                Add-Log "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode))"
             }
         } catch {
-            \$statusText.Text = "[ERROR] \$(\$prog.name): \$_"
-            \$logText.Text += "[ERROR] \$(\$prog.name): \$_ \`n"
+            Add-Log "[ERROR] \$(\$prog.name): \$_"
         }
         [System.Windows.Forms.Application]::DoEvents()
     }
@@ -214,6 +231,7 @@ try {
     \$statusText.Text = "Все задачи завершены!"
     \$installBtn.IsEnabled = \$true
     \$progressBar.Visibility = "Collapsed"
+    Add-Log "--- ГОТОВО ---"
     [System.Windows.MessageBox]::Show("Установка завершена!", "Готово", "OK", "Information")
 })
 
