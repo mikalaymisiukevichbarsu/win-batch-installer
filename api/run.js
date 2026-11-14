@@ -1,8 +1,14 @@
-import { redis, ensureSeeded } from '../lib/db.js';
+import { ensureSeeded } from '../lib/db.js';
 
 export default async function handler(req, res) {
   try {
-    await ensureSeeded();
+    try {
+      if (typeof ensureSeeded === 'function') {
+        await ensureSeeded();
+      }
+    } catch (dbError) {
+      console.error('Database seed warning:', dbError);
+    }
 
     const host = req.headers.host || 'win-batch-installer.vercel.app';
     const baseUrl = `https://${host}`;
@@ -10,10 +16,9 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-    // XAML разметка. Символов $ здесь нет, экранирование не нужно
     const xaml = `
-<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
-        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+<Window xmlns="http://microsoft.com"
+        xmlns:x="http://microsoft.com"
         Title="Win Batch Installer" Height="650" Width="600"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
         Background="#1e1e1e" Foreground="White" FontFamily="Segoe UI">
@@ -57,9 +62,10 @@ export default async function handler(req, res) {
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
         </Grid.RowDefinitions>
 
-        <TextBlock Text="Выберите программы" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
+        <TextBlock Grid.Row="0" Text="Выберите программы" FontSize="20" FontWeight="Bold" Margin="0,0,0,20"/>
 
         <ScrollViewer Grid.Row="1" VerticalScrollBarVisibility="Auto" Margin="0,0,0,20">
             <StackPanel Name="ProgramsStack" />
@@ -78,7 +84,7 @@ export default async function handler(req, res) {
 
         <ProgressBar Name="ProgressBar" Grid.Row="3" Height="20" Minimum="0" Maximum="100" Margin="0,0,0,10" Visibility="Collapsed"/>
         
-        <ScrollViewer Grid.Row="4" Height="120" VerticalScrollBarVisibility="Auto" Margin="0,0,0,10">
+        <ScrollViewer Name="LogScroll" Grid.Row="4" Height="120" VerticalScrollBarVisibility="Auto" Margin="0,0,0,10">
             <TextBlock Name="LogText" Text="" Foreground="#888" FontSize="11" TextWrapping="Wrap"/>
         </ScrollViewer>
 
@@ -88,12 +94,9 @@ export default async function handler(req, res) {
 </Window>
 `;
 
-    // ВАЖНО: 
-    // 1. Все переменные PowerShell экранированы ОДНИМ слешем: \$
-    // 2. Переменные JS (${xaml}, ${baseUrl}) НЕ экранированы
-    // 3. Обратные слеши в путях Windows удвоены: \\
     const script = `
-# Win Batch Installer WPF GUI v1.7.2
+# Win Batch Installer WPF GUI v1.7.3
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
@@ -113,13 +116,14 @@ ${xaml}
 \$statusText = \$window.FindName("StatusText")
 \$progressBar = \$window.FindName("ProgressBar")
 \$logText = \$window.FindName("LogText")
+\$logScroll = \$window.FindName("LogScroll")
 
 \$Global:ProgramsList = @()
 
 function Add-Log {
     param ([string]\$Message)
-    \$logText.Text += "\$Message \`n"
-    \$logText.ScrollToEnd()
+    \$logText.Text += "\$Message\`n"
+    \$logScroll.ScrollToEnd()
     [System.Windows.Forms.Application]::DoEvents()
 }
 
@@ -128,13 +132,25 @@ function Download-WithProgress {
     \$wc = New-Object System.Net.WebClient
     \$wc.Headers.Add("User-Agent", "Mozilla/5.0")
     
-    Register-ObjectEvent -InputObject \$wc -EventName DownloadProgressChanged -Action {
-        \$progressBar.Value = \$EventArgs.ProgressPercentage
-        [System.Windows.Forms.Application]::DoEvents()
-    } | Out-Null
+    \$eventJob = Register-ObjectEvent -InputObject \$wc -EventName DownloadProgressChanged -Action {
+        \$Global:DownloadProgress = \$EventArgs.ProgressPercentage
+    }
     
-    \$wc.DownloadFile(\$Url, \$OutFile)
+    \$Global:DownloadProgress = 0
+    \$task = \$wc.DownloadFileTaskAsync(\$Url, \$OutFile)
+    
+    while (-not \$task.IsCompleted) {
+        \$progressBar.Value = \$Global:DownloadProgress
+        [System.Windows.Forms.Application]::DoEvents()
+        Start-Sleep -Milliseconds 50
+    }
+    
+    Unregister-Event -SourceIdentifier \$eventJob.Name -ErrorAction SilentlyContinue
     \$wc.Dispose()
+    
+    if (\$task.IsFaulted) {
+        throw \$task.Exception.InnerException
+    }
 }
 
 \$statusText.Text = "Подключение к серверу..."
@@ -146,12 +162,13 @@ try {
         \$cb = New-Object System.Windows.Controls.CheckBox
         \$cb.Content = \$prog.name
         \$cb.Tag = \$prog
-        \$programsStack.Children.Add(\$cb)
+        \$programsStack.Children.Add(\$cb) | Out-Null
     }
     \$statusText.Text = "Список программ загружен."
 } catch {
     \$statusText.Text = "Ошибка подключения к API!"
     \$statusText.Foreground = "#ff5555"
+    Add-Log "[ERROR] Не удалось получить список: \$_"
 }
 
 \$browseBtn.Add_Click({
@@ -163,22 +180,21 @@ try {
 })
 
 \$installBtn.Add_Click({
-    \$selected = \$programsStack.Children | Where-Object { \$_ -is [System.Windows.Controls.CheckBox] -and \$_.IsChecked }
+    \$selected = @(\$programsStack.Children | Where-Object { \$_ -is [System.Windows.Controls.CheckBox] -and \$_.IsChecked })
     
     if (\$selected.Count -eq 0) {
-        [System.Windows.MessageBox]::Show("Выберите хотя бы одну программу!", "Внимание", "OK", "Warning")
+        [System.Windows.MessageBox]::Show("Выберите хотя бы одну программу!", "Внимание", "OK", "Warning") | Out-Null
         return
     }
 
     \$installPath = \$pathBox.Text.Trim()
     if (-not \$installPath) { \$installPath = "C:\\Programs" }
 
-    # Окно подтверждения
-    \$confirmMsg = "Вы собираетесь установить:`n`n"
+    \$confirmMsg = "Вы собираетесь установить:\`n\`n"
     foreach (\$item in \$selected) {
-        \$confirmMsg += "• \$(\$item.Tag.name)`n"
+        \$confirmMsg += "• \$(\$item.Tag.name)\`n"
     }
-    \$confirmMsg += "`nЦелевая папка: \$installPath`n`nПродолжить?"
+    \$confirmMsg += "\`nЦелевая папка: \$installPath\`n\`nПродолжить?"
 
     \$result = [System.Windows.MessageBox]::Show(\$confirmMsg, "Подтверждение установки", "YesNo", "Question")
     if (\$result -ne "Yes") {
@@ -209,7 +225,7 @@ try {
         \$progressBar.Value = 0
         
         \$fileName = Split-Path \$prog.url -Leaf
-        if (-not \$fileName) { \$fileName = "installer.exe" }
+        if (-not \$fileName -or \$fileName -notmatch '\\.') { \$fileName = "installer_\$(Get-Random).exe" }
         \$tempFile = Join-Path \$env:TEMP \$fileName
         
         Add-Log ">> Скачивание \$(\$prog.name)..."
@@ -222,10 +238,8 @@ try {
             \$progressBar.IsIndeterminate = \$true
             Add-Log "   Запуск установщика..."
             
-            # Безопасный запуск через cmd
-            \$rawArgs = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
-            \$safeArgs = \$rawArgs -replace "'", "''"
-            \$cmdLine = 'start /wait "" "' + \$tempFile + '" ' + \$safeArgs
+            \$rawArgs = if (\$prog.args) { \$prog.args -replace '\\{PATH\\}', \$installPath } else { "/SILENT" }
+            \$cmdLine = 'start /wait "" "' + \$tempFile + '" ' + \$rawArgs
             
             \$proc = Start-Process cmd -ArgumentList "/c \$cmdLine" -Wait -PassThru -NoNewWindow
             
@@ -240,25 +254,21 @@ try {
                 Add-Log "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode))"
             }
         } catch {
+            \$progressBar.IsIndeterminate = \$false
             Add-Log "[ERROR] \$(\$prog.name): \$_"
         }
-        [System.Windows.Forms.Application]::DoEvents()
-    }
-
-    \$statusText.Text = "Все задачи завершены!"
-    \$installBtn.IsEnabled = \$true
-    \$progressBar.Visibility = "Collapsed"
-    Add-Log "--- ГОТОВО ---"
-    [System.Windows.MessageBox]::Show("Установка завершена!", "Готово", "OK", "Information")
-})
-
-\$window.ShowDialog()
-`;
-
-    return res.status(200).send(script);
-
-  } catch (error) {
-    console.error('Critical error in /api/run:', error);
-    return res.status(500).send('Write-Host "[ERROR] Server error." -ForegroundColor Red');
   }
+$statusText.Text = "Все задачи завершены!"
+$installBtn.IsEnabled = $true
+$progressBar.Visibility = "Collapsed"
+Add-Log "--- ГОТОВО ---"
+[System.Windows.MessageBox]::Show("Установка завершена!", "Готово", "OK", "Information") | Out-Null
+})
+$window.ShowDialog() | Out-Null
+`;
+return res.status(200).send(script);
+} catch (error) {
+console.error('Critical error in /api/run:', error);
+return res.status(500).send(Write-Host "[ERROR] Server error: ${error.message}" -ForegroundColor Red);
+}
 }
