@@ -102,21 +102,30 @@ export default async function handler(req, res) {
   lines.push('$form.Controls.Add($btnInstall)');
   lines.push('');
 
-  // --- ЛОГИКА ЗАГРУЗКИ ПРОГРАММ ---
+  // --- ЗАГРУЗКА ПРОГРАММ (ИСПРАВЛЕННАЯ) ---
   lines.push('try {');
-  lines.push(`    $programs = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing`);
-  lines.push('    if ($programs.Count -eq 0) { throw "No programs found in database." }');
+  lines.push(`    $response = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing`);
+  lines.push('    $programs = @($response)'); // Гарантия массива
+  lines.push('    ');
+  lines.push('    if ($programs.Count -eq 0) { throw "Database is empty." }');
+  lines.push('    ');
+  lines.push('    $loadedCount = 0');
   lines.push('    foreach ($p in $programs) {');
-  lines.push('        $cb = New-Object System.Windows.Forms.CheckBox');
-  lines.push('        $cb.Text = $p.name');
-  lines.push('        $cb.Tag = $p');
-  lines.push('        $cb.AutoSize = $true');
-  lines.push('        $cb.Margin = New-Object System.Windows.Forms.Padding(0, 5, 0, 5)');
-  lines.push('        $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10)');
-  lines.push('        $flowPanel.Controls.Add($cb)');
+  lines.push('        if ($p.name -and $p.url) {');
+  lines.push('            $cb = New-Object System.Windows.Forms.CheckBox');
+  lines.push('            $cb.Text = $p.name.ToString()');
+  lines.push('            $cb.Tag = $p');
+  lines.push('            $cb.AutoSize = $true');
+  lines.push('            $cb.Margin = New-Object System.Windows.Forms.Padding(0, 8, 0, 8)');
+  lines.push('            $cb.Font = New-Object System.Drawing.Font("Segoe UI", 10)');
+  lines.push('            $flowPanel.Controls.Add($cb)');
+  lines.push('            $loadedCount++');
+  lines.push('        }');
   lines.push('    }');
+  lines.push('    ');
+  lines.push('    if ($loadedCount -eq 0) { throw "No valid programs found." }');
   lines.push('} catch {');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("Error loading programs: $_", "Connection Error", "OK", "Error")');
+  lines.push('    [System.Windows.Forms.MessageBox]::Show("Error: $_", "Loading Failed", "OK", "Error")');
   lines.push('    exit');
   lines.push('}');
   lines.push('');
@@ -144,7 +153,7 @@ export default async function handler(req, res) {
   lines.push('    if (-not (Test-Path $installPath)) { New-Item -ItemType Directory -Path $installPath -Force | Out-Null }');
   lines.push('    ');
   lines.push('    $form.Enabled = $false');
-  lines.push('    $btnInstall.Text = "Installing... (Check console for progress)"');
+  lines.push('    $btnInstall.Text = "Installing... (Check console)"');
   lines.push('    ');
   lines.push('    foreach ($cb in $selected) {');
   lines.push('        $prog = $cb.Tag');
@@ -164,7 +173,7 @@ export default async function handler(req, res) {
   lines.push('                Start-Process -FilePath $tempFile -ArgumentList $args -Wait -NoNewWindow');
   lines.push('            }');
   lines.push('            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue');
-  lines.push('            Write-Host "[OK] $($prog.name) installed successfully." -ForegroundColor Green');
+  lines.push('            Write-Host "[OK] $($prog.name) installed." -ForegroundColor Green');
   lines.push('        } catch {');
   lines.push('            Write-Host "[FAIL] $($prog.name): $_" -ForegroundColor Red');
   lines.push('        }');
@@ -172,7 +181,7 @@ export default async function handler(req, res) {
   lines.push('    ');
   lines.push('    $btnInstall.Text = "Install Selected Programs"');
   lines.push('    $form.Enabled = $true');
-  lines.push('    [System.Windows.Forms.MessageBox]::Show("All selected programs have been processed!", "Done", "OK", "Information")');
+  lines.push('    [System.Windows.Forms.MessageBox]::Show("Done!", "Complete", "OK", "Information")');
   lines.push('});');
   lines.push('');
   lines.push('[void]$form.ShowDialog()');
