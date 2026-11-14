@@ -33,8 +33,20 @@ export default async function handler(req, res) {
   console.log('DEBUG AUTH_HEADER:', req.headers.authorization); // <-- И ЭТУ
 
   const isAuthenticated = () => {
-    const authHeader = req.headers.authorization;
-    return authHeader === `Bearer ${adminPass}` && !!adminPass;
+      if (!adminPass) {
+          console.error('ADMIN_PASSWORD is not set!');
+          return false;
+      }
+      
+      // Получаем заголовок в любом регистре
+      const authHeader = req.headers.authorization || req.headers['authorization'];
+      
+      if (!authHeader) return false;
+      
+      // Убираем префикс "Bearer " и сравниваем
+      const token = authHeader.startsWith('Bearer ') ? authHeader.slice(7) : authHeader;
+      
+      return token === adminPass;
   };
 
   try {
