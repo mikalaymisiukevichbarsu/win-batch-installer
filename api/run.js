@@ -10,7 +10,7 @@ export default async function handler(req, res) {
     res.setHeader('Content-Type', 'text/plain; charset=utf-8');
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
-    // XAML разметка. Здесь нет $, поэтому экранирование не нужно
+    // XAML разметка. Символов $ здесь нет, экранирование не нужно
     const xaml = `
 <Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
@@ -88,169 +88,171 @@ export default async function handler(req, res) {
 </Window>
 `;
 
-    // ВАЖНО: Все $ в PowerShell-коде экранированы как \$, 
-    // кроме ${xaml} и ${baseUrl}, которые являются переменными JS
+    // ВАЖНО: 
+    // 1. Все переменные PowerShell экранированы ОДНИМ слешем: \$
+    // 2. Переменные JS (${xaml}, ${baseUrl}) НЕ экранированы
+    // 3. Обратные слеши в путях Windows удвоены: \\
     const script = `
-# Win Batch Installer WPF GUI v1.7.1
+# Win Batch Installer WPF GUI v1.7.2
 Add-Type -AssemblyName PresentationFramework
 Add-Type -AssemblyName System.Windows.Forms
 
-\\$BaseUrl = "${baseUrl}"
+\$BaseUrl = "${baseUrl}"
 
-[xml]\\$xaml = @"
+[xml]\$xaml = @"
 ${xaml}
 "@
 
-\\$reader = (New-Object System.Xml.XmlNodeReader \\$xaml)
-\\$window = [Windows.Markup.XamlReader]::Load(\\$reader)
+\$reader = (New-Object System.Xml.XmlNodeReader \$xaml)
+\$window = [Windows.Markup.XamlReader]::Load(\$reader)
 
-\\$programsStack = \\$window.FindName("ProgramsStack")
-\\$pathBox = \\$window.FindName("PathBox")
-\\$installBtn = \\$window.FindName("InstallBtn")
-\\$browseBtn = \\$window.FindName("BrowseBtn")
-\\$statusText = \\$window.FindName("StatusText")
-\\$progressBar = \\$window.FindName("ProgressBar")
-\\$logText = \\$window.FindName("LogText")
+\$programsStack = \$window.FindName("ProgramsStack")
+\$pathBox = \$window.FindName("PathBox")
+\$installBtn = \$window.FindName("InstallBtn")
+\$browseBtn = \$window.FindName("BrowseBtn")
+\$statusText = \$window.FindName("StatusText")
+\$progressBar = \$window.FindName("ProgressBar")
+\$logText = \$window.FindName("LogText")
 
-\\$Global:ProgramsList = @()
+\$Global:ProgramsList = @()
 
 function Add-Log {
-    param ([string]\\$Message)
-    \\$logText.Text += "\\$Message \`n"
-    \\$logText.ScrollToEnd()
+    param ([string]\$Message)
+    \$logText.Text += "\$Message \`n"
+    \$logText.ScrollToEnd()
     [System.Windows.Forms.Application]::DoEvents()
 }
 
 function Download-WithProgress {
-    param ([string]\\$Url, [string]\\$OutFile)
-    \\$wc = New-Object System.Net.WebClient
-    \\$wc.Headers.Add("User-Agent", "Mozilla/5.0")
+    param ([string]\$Url, [string]\$OutFile)
+    \$wc = New-Object System.Net.WebClient
+    \$wc.Headers.Add("User-Agent", "Mozilla/5.0")
     
-    Register-ObjectEvent -InputObject \\$wc -EventName DownloadProgressChanged -Action {
-        \\$progressBar.Value = \\$EventArgs.ProgressPercentage
+    Register-ObjectEvent -InputObject \$wc -EventName DownloadProgressChanged -Action {
+        \$progressBar.Value = \$EventArgs.ProgressPercentage
         [System.Windows.Forms.Application]::DoEvents()
     } | Out-Null
     
-    \\$wc.DownloadFile(\\$Url, \\$OutFile)
-    \\$wc.Dispose()
+    \$wc.DownloadFile(\$Url, \$OutFile)
+    \$wc.Dispose()
 }
 
-\\$statusText.Text = "Подключение к серверу..."
+\$statusText.Text = "Подключение к серверу..."
 try {
-    \\$response = Invoke-RestMethod -Uri "\\$BaseUrl/api/programs" -Method Get
-    \\$Global:ProgramsList = \\$response
+    \$response = Invoke-RestMethod -Uri "\$BaseUrl/api/programs" -Method Get
+    \$Global:ProgramsList = \$response
     
-    foreach (\\$prog in \\$Global:ProgramsList) {
-        \\$cb = New-Object System.Windows.Controls.CheckBox
-        \\$cb.Content = \\$prog.name
-        \\$cb.Tag = \\$prog
-        \\$programsStack.Children.Add(\\$cb)
+    foreach (\$prog in \$Global:ProgramsList) {
+        \$cb = New-Object System.Windows.Controls.CheckBox
+        \$cb.Content = \$prog.name
+        \$cb.Tag = \$prog
+        \$programsStack.Children.Add(\$cb)
     }
-    \\$statusText.Text = "Список программ загружен."
+    \$statusText.Text = "Список программ загружен."
 } catch {
-    \\$statusText.Text = "Ошибка подключения к API!"
-    \\$statusText.Foreground = "#ff5555"
+    \$statusText.Text = "Ошибка подключения к API!"
+    \$statusText.Foreground = "#ff5555"
 }
 
-\\$browseBtn.Add_Click({
-    \\$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
-    \\$folderBrowser.Description = "Выберите папку для установки"
-    if (\\$folderBrowser.ShowDialog() -eq "OK") {
-        \\$pathBox.Text = \\$folderBrowser.SelectedPath
+\$browseBtn.Add_Click({
+    \$folderBrowser = New-Object System.Windows.Forms.FolderBrowserDialog
+    \$folderBrowser.Description = "Выберите папку для установки"
+    if (\$folderBrowser.ShowDialog() -eq "OK") {
+        \$pathBox.Text = \$folderBrowser.SelectedPath
     }
 })
 
-\\$installBtn.Add_Click({
-    \\$selected = \\$programsStack.Children | Where-Object { \\$_ -is [System.Windows.Controls.CheckBox] -and \\$_.IsChecked }
+\$installBtn.Add_Click({
+    \$selected = \$programsStack.Children | Where-Object { \$_ -is [System.Windows.Controls.CheckBox] -and \$_.IsChecked }
     
-    if (\\$selected.Count -eq 0) {
+    if (\$selected.Count -eq 0) {
         [System.Windows.MessageBox]::Show("Выберите хотя бы одну программу!", "Внимание", "OK", "Warning")
         return
     }
 
-    \\$installPath = \\$pathBox.Text.Trim()
-    if (-not \\$installPath) { \\$installPath = "C:\\\\Programs" }
+    \$installPath = \$pathBox.Text.Trim()
+    if (-not \$installPath) { \$installPath = "C:\\Programs" }
 
     # Окно подтверждения
-    \\$confirmMsg = "Вы собираетесь установить:`n`n"
-    foreach (\\$item in \\$selected) {
-        \\$confirmMsg += "• \\$(\\$item.Tag.name)`n"
+    \$confirmMsg = "Вы собираетесь установить:`n`n"
+    foreach (\$item in \$selected) {
+        \$confirmMsg += "• \$(\$item.Tag.name)`n"
     }
-    \\$confirmMsg += "`nЦелевая папка: \\$installPath`n`nПродолжить?"
+    \$confirmMsg += "`nЦелевая папка: \$installPath`n`nПродолжить?"
 
-    \\$result = [System.Windows.MessageBox]::Show(\\$confirmMsg, "Подтверждение установки", "YesNo", "Question")
-    if (\\$result -ne "Yes") {
+    \$result = [System.Windows.MessageBox]::Show(\$confirmMsg, "Подтверждение установки", "YesNo", "Question")
+    if (\$result -ne "Yes") {
         Add-Log "Установка отменена пользователем."
         return
     }
 
     Add-Log "Начало установки..."
-    Add-Log "Целевая папка: \\$installPath"
+    Add-Log "Целевая папка: \$installPath"
     
-    if (-not (Test-Path \\$installPath)) {
+    if (-not (Test-Path \$installPath)) {
         try {
-            New-Item -ItemType Directory -Path \\$installPath -Force | Out-Null
+            New-Item -ItemType Directory -Path \$installPath -Force | Out-Null
             Add-Log "Папка создана."
         } catch {
-            Add-Log "[ERROR] Не удалось создать папку: \\$_"
+            Add-Log "[ERROR] Не удалось создать папку: \$_"
             return
         }
     }
 
-    \\$installBtn.IsEnabled = \\$false
-    \\$progressBar.Visibility = "Visible"
-    \\$logText.Text = ""
+    \$installBtn.IsEnabled = \$false
+    \$progressBar.Visibility = "Visible"
+    \$logText.Text = ""
 
-    foreach (\\$item in \\$selected) {
-        \\$prog = \\$item.Tag
-        \\$statusText.Text = "Обработка: \\$(\\$prog.name)..."
-        \\$progressBar.Value = 0
+    foreach (\$item in \$selected) {
+        \$prog = \$item.Tag
+        \$statusText.Text = "Обработка: \$(\$prog.name)..."
+        \$progressBar.Value = 0
         
-        \\$fileName = Split-Path \\$prog.url -Leaf
-        if (-not \\$fileName) { \\$fileName = "installer.exe" }
-        \\$tempFile = Join-Path \\$env:TEMP \\$fileName
+        \$fileName = Split-Path \$prog.url -Leaf
+        if (-not \$fileName) { \$fileName = "installer.exe" }
+        \$tempFile = Join-Path \$env:TEMP \$fileName
         
-        Add-Log ">> Скачивание \\$(\\$prog.name)..."
-        Add-Log "   Временный файл: \\$tempFile"
+        Add-Log ">> Скачивание \$(\$prog.name)..."
+        Add-Log "   Временный файл: \$tempFile"
 
         try {
-            Download-WithProgress -Url \\$prog.url -OutFile \\$tempFile
+            Download-WithProgress -Url \$prog.url -OutFile \$tempFile
             
-            \\$statusText.Text = "Установка: \\$(\\$prog.name)..."
-            \\$progressBar.IsIndeterminate = \\$true
+            \$statusText.Text = "Установка: \$(\$prog.name)..."
+            \$progressBar.IsIndeterminate = \$true
             Add-Log "   Запуск установщика..."
             
             # Безопасный запуск через cmd
-            \\$rawArgs = if (\\$prog.args) { \\$prog.args -replace '\\{PATH\\}', \\$installPath } else { "/SILENT" }
-            \\$safeArgs = \\$rawArgs -replace "'", "''"
-            \\$cmdLine = 'start /wait "" "' + \\$tempFile + '" ' + \\$safeArgs
+            \$rawArgs = if (\$prog.args) { \$prog.args -replace '\{PATH\}', \$installPath } else { "/SILENT" }
+            \$safeArgs = \$rawArgs -replace "'", "''"
+            \$cmdLine = 'start /wait "" "' + \$tempFile + '" ' + \$safeArgs
             
-            \\$proc = Start-Process cmd -ArgumentList "/c \\$cmdLine" -Wait -PassThru -NoNewWindow
+            \$proc = Start-Process cmd -ArgumentList "/c \$cmdLine" -Wait -PassThru -NoNewWindow
             
-            Remove-Item \\$tempFile -Force -ErrorAction SilentlyContinue
+            Remove-Item \$tempFile -Force -ErrorAction SilentlyContinue
             
-            \\$progressBar.IsIndeterminate = \\$false
-            \\$progressBar.Value = 100
+            \$progressBar.IsIndeterminate = \$false
+            \$progressBar.Value = 100
             
-            if (\\$proc.ExitCode -eq 0) {
-                Add-Log "[OK] \\$(\\$prog.name) установлена в \\$installPath"
+            if (\$proc.ExitCode -eq 0) {
+                Add-Log "[OK] \$(\$prog.name) установлена в \$installPath"
             } else {
-                Add-Log "[FAIL] \\$(\\$prog.name) (Код: \\$(\\$proc.ExitCode))"
+                Add-Log "[FAIL] \$(\$prog.name) (Код: \$(\$proc.ExitCode))"
             }
         } catch {
-            Add-Log "[ERROR] \\$(\\$prog.name): \\$_"
+            Add-Log "[ERROR] \$(\$prog.name): \$_"
         }
         [System.Windows.Forms.Application]::DoEvents()
     }
 
-    \\$statusText.Text = "Все задачи завершены!"
-    \\$installBtn.IsEnabled = \\$true
-    \\$progressBar.Visibility = "Collapsed"
+    \$statusText.Text = "Все задачи завершены!"
+    \$installBtn.IsEnabled = \$true
+    \$progressBar.Visibility = "Collapsed"
     Add-Log "--- ГОТОВО ---"
     [System.Windows.MessageBox]::Show("Установка завершена!", "Готово", "OK", "Information")
 })
 
-\\$window.ShowDialog()
+\$window.ShowDialog()
 `;
 
     return res.status(200).send(script);
