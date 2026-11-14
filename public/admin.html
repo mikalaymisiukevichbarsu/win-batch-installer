@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Admin | Win Batch Installer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-8">
+    <div class="max-w-3xl mx-auto">
+        <div class="flex justify-between items-center mb-8">
+            <h1 class="text-2xl font-bold">⚙️ Админ-панель</h1>
+            <a href="/" class="text-sm text-slate-400 hover:text-white">← На главную</a>
+        </div>
+
+        <!-- Login Form -->
+        <div id="loginForm" class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+            <h2 class="text-lg font-semibold mb-4">Авторизация</h2>
+            <input type="password" id="adminPass" placeholder="Введите пароль администратора" 
+                   class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 mb-4 focus:ring-2 focus:ring-blue-500 outline-none">
+            <button onclick="login()" class="w-full bg-blue-600 hover:bg-blue-500 py-3 rounded-lg font-medium transition">Войти</button>
+            <p id="loginError" class="text-red-400 text-sm mt-3 hidden">Неверный пароль</p>
+        </div>
+
+        <!-- Admin Dashboard (Hidden initially) -->
+        <div id="dashboard" class="hidden space-y-6">
+            <!-- Add/Edit Form -->
+            <div class="bg-slate-800 p-6 rounded-xl border border-slate-700">
+                <h2 id="formTitle" class="text-lg font-semibold mb-4">Добавить программу</h2>
+                <input type="hidden" id="editId">
+                
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 mb-4">
+                    <input type="text" id="pName" placeholder="Название (например: VS Code)" class="admin-input bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500">
+                    <input type="text" id="pCategory" placeholder="Категория (например: Dev Tools)" class="admin-input bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+                
+                <input type="text" id="pIcon" placeholder="URL иконки (опционально)" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 mb-4 outline-none focus:ring-2 focus:ring-blue-500">
+                <input type="text" id="pUrl" placeholder="Прямая ссылка на .exe/.msi" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 mb-4 outline-none focus:ring-2 focus:ring-blue-500">
+                
+                <div class="mb-4">
+                    <label class="text-xs text-slate-400 mb-1 block">Аргументы тихой установки ({PATH} = путь установки)</label>
+                    <select id="argsPreset" onchange="applyPreset()" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-2 mb-2 outline-none">
+                        <option value="">Выбрать пресет...</option>
+                        <option value="/S /D={PATH}\APP_NAME">NSIS (/S /D=...)</option>
+                        <option value="/VERYSILENT /DIR=&quot;{PATH}\APP_NAME&quot;">Inno Setup (/VERYSILENT...)</option>
+                        <option value="/qn INSTALLDIR=&quot;{PATH}\APP_NAME&quot;">MSI (/qn INSTALLDIR=...)</option>
+                        <option value="/silent /install">Chrome-style (/silent /install)</option>
+                    </select>
+                    <input type="text" id="pArgs" placeholder="Или введите вручную" class="w-full bg-slate-900 border border-slate-700 rounded-lg px-4 py-3 outline-none focus:ring-2 focus:ring-blue-500">
+                </div>
+
+                <div class="flex gap-3">
+                    <button onclick="saveProgram()" class="flex-1 bg-emerald-600 hover:bg-emerald-500 py-3 rounded-lg font-medium transition">Сохранить</button>
+                    <button onclick="resetForm()" class="px-6 py-3 bg-slate-700 hover:bg-slate-600 rounded-lg transition">Сброс</button>
+                </div>
+            </div>
+
+            <!-- Programs List -->
+            <div class="bg-slate-800 rounded-xl border border-slate-700 overflow-hidden">
+                <table class="w-full text-left text-sm">
+                    <thead class="bg-slate-900/50 text-slate-400">
+                        <tr>
+                            <th class="px-4 py-3">Программа</th>
+                            <th class="px-4 py-3">Категория</th>
+                            <th class="px-4 py-3 text-right">Действия</th>
+                        </tr>
+                    </thead>
+                    <tbody id="programsList"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+<script>
+let token;
+(async function checkSession() {
+    const savedToken = sessionStorage.getItem('admin_token');
+    if (!savedToken) return;
+
+    try {
+        const res = await fetch('/api/programs', {
+            method: 'HEAD',
+            headers: { 'Authorization': `Bearer ${savedToken}` }
+        });
+
+        if (res.ok) {
+            token = savedToken;
+            initDashboard();
+        } else {
+            sessionStorage.removeItem('admin_token');
+            console.warn('Saved admin token is invalid, session cleared.');
+        }
+    } catch (e) {
+        console.warn('Could not validate saved token:', e);
+        token = savedToken;
+        initDashboard();
+    }
+})();
+
+async function login() {
+    const pass = document.getElementById('adminPass').value;
+    const errorEl = document.getElementById('loginError');
+    
+    try {
+        // Используем HEAD для безопасной проверки токена
+        const res = await fetch('/api/programs', { 
+            method: 'HEAD',
+            headers: { 'Authorization': `Bearer ${pass}` } 
+        });
+        
+        if (res.ok) {
+            token = pass;
+            sessionStorage.setItem('admin_token', token);
+            errorEl.classList.add('hidden');
+            initDashboard();
+        } else {
+            errorEl.textContent = 'Неверный пароль';
+            errorEl.classList.remove('hidden');
+        }
+    } catch (e) {
+        errorEl.textContent = 'Ошибка соединения с сервером';
+        errorEl.classList.remove('hidden');
+    }
+}
+
+async function initDashboard() {
+    document.getElementById('loginForm').classList.add('hidden');
+    document.getElementById('dashboard').classList.remove('hidden');
+    await loadPrograms();
+}
+
+async function loadPrograms() {
+    const res = await fetch('/api/programs');
+    const programs = await res.json();
+    const tbody = document.getElementById('programsList');
+    tbody.innerHTML = '';
+
+    // Поля приходят из базы: строим ячейки через DOM API, чтобы HTML из
+    // названия программы не исполнялся, а обработчики не собирались из строк.
+    programs.forEach(p => {
+        const row = document.createElement('tr');
+        row.className = 'border-t border-slate-700/50 hover:bg-slate-700/30';
+
+        const nameCell = document.createElement('td');
+        nameCell.className = 'px-4 py-3 font-medium';
+        nameCell.textContent = p.name || '';
+        row.appendChild(nameCell);
+
+        const catCell = document.createElement('td');
+        catCell.className = 'px-4 py-3 text-slate-400';
+        catCell.textContent = p.category || '';
+        row.appendChild(catCell);
+
+        const actions = document.createElement('td');
+        actions.className = 'px-4 py-3 text-right space-x-2';
+
+        const editBtn = document.createElement('button');
+        editBtn.className = 'text-blue-400 hover:text-blue-300';
+        editBtn.textContent = '✏️';
+        editBtn.addEventListener('click', () => editProgram(p));
+        actions.appendChild(editBtn);
+
+        const delBtn = document.createElement('button');
+        delBtn.className = 'text-red-400 hover:text-red-300';
+        delBtn.textContent = '🗑️';
+        delBtn.addEventListener('click', () => deleteProgram(p.id));
+        actions.appendChild(delBtn);
+
+        row.appendChild(actions);
+        tbody.appendChild(row);
+    });
+}
+
+function applyPreset() {
+    const preset = document.getElementById('argsPreset').value;
+    if (preset) document.getElementById('pArgs').value = preset;
+}
+
+function resetForm() {
+    document.getElementById('editId').value = '';
+    document.getElementById('pName').value = '';
+    document.getElementById('pCategory').value = '';
+    document.getElementById('pIcon').value = '';
+    document.getElementById('pUrl').value = '';
+    document.getElementById('pArgs').value = '';
+    document.getElementById('argsPreset').value = '';
+    document.getElementById('formTitle').textContent = 'Добавить программу';
+}
+
+function editProgram(p) {
+    document.getElementById('editId').value = p.id;
+    document.getElementById('pName').value = p.name;
+    document.getElementById('pCategory').value = p.category;
+    document.getElementById('pIcon').value = p.icon || '';
+    document.getElementById('pUrl').value = p.url;
+    document.getElementById('pArgs').value = p.args || '';
+    document.getElementById('formTitle').textContent = 'Редактировать программу';
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+}
+
+async function saveProgram() {
+    const id = document.getElementById('editId').value;
+    const data = {
+        name: document.getElementById('pName').value,
+        category: document.getElementById('pCategory').value,
+        icon: document.getElementById('pIcon').value,
+        url: document.getElementById('pUrl').value,
+        args: document.getElementById('pArgs').value
+    };
+
+    const method = id ? 'PUT' : 'POST';
+    const body = id ? { ...data, id } : data;
+
+    const res = await fetch('/api/programs', {
+        method,
+        headers: {
+            'Content-Type': 'application/json',
+            'Authorization': `Bearer ${token}`
+        },
+        body: JSON.stringify(body)
+    });
+
+    if (!res.ok) {
+        // Сервер проверяет данные (например, имя должно содержать латиницу),
+        // поэтому показываем причину и не сбрасываем форму.
+        let message = `Ошибка сохранения (${res.status})`;
+        try {
+            const err = await res.json();
+            if (err && err.error) message = err.error;
+        } catch (e) { /* тело не JSON — оставляем общий текст */ }
+        alert(message);
+        return;
+    }
+
+    resetForm();
+    await loadPrograms();
+}
+
+async function deleteProgram(id) {
+    if (!confirm('Удалить эту программу?')) return;
+    await fetch(`/api/programs?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: { 'Authorization': `Bearer ${token}` }
+    });
+    await loadPrograms();
+}
+</script>
+</body>
+</html>

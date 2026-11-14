@@ -1,0 +1,13 @@
+{
+  "rewrites": [
+    { "source": "/run", "destination": "/api/run" }
+  ],
+  "headers": [
+    {
+      "source": "/api/(.*)",
+      "headers": [
+        { "key": "Cache-Control", "value": "no-store, must-revalidate" }
+      ]
+    }
+  ]
+}

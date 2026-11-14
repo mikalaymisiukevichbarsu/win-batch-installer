@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Win Batch Installer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .cmd-box { font-family: 'Consolas', 'Monaco', monospace; }
+        [x-cloak] { display: none !important; }
+    </style>
+</head>
+<body class="bg-slate-900 text-slate-100 min-h-screen p-4 md:p-8">
+    <div class="max-w-5xl mx-auto">
+        <!-- Header -->
+        <header class="flex justify-between items-center mb-8">
+            <h1 class="text-3xl font-bold bg-gradient-to-r from-blue-400 to-emerald-400 bg-clip-text text-transparent">
+                📦 Win Batch Installer
+            </h1>
+            <a href="/admin.html" class="text-sm text-slate-400 hover:text-white transition">Админ-панель</a>
+        </header>
+
+        <!-- Controls -->
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
+            <input type="text" id="search" placeholder="Поиск программы..." 
+                   class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none">
+            
+            <select id="diskSelect" class="bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none">
+                <option value="C:\Programs">Диск C:\Programs</option>
+                <option value="D:\Programs" selected>Диск D:\Programs</option>
+                <option value="E:\Programs">Диск E:\Programs</option>
+                <option value="custom">Указать вручную...</option>
+            </select>
+
+            <input type="text" id="customPath" placeholder="D:\MyApps" 
+                   class="hidden bg-slate-800 border border-slate-700 rounded-lg px-4 py-3 focus:ring-2 focus:ring-blue-500 outline-none">
+        </div>
+
+        <!-- Programs Grid -->
+        <div id="programsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4 mb-8">
+            <!-- Cards will be injected here -->
+        </div>
+
+        <!-- Command Output Section -->
+        <div class="sticky bottom-4 bg-slate-800/95 backdrop-blur border border-slate-700 rounded-xl p-6 shadow-2xl">
+            <div class="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 mb-4">
+                <div>
+                    <h3 class="font-semibold text-lg">Готовая команда</h3>
+                    <p class="text-xs text-slate-400 mt-1">1. Запустите PowerShell от имени админа → 2. Вставьте команду → 3. Нажмите Enter</p>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="toggleCode()" class="px-4 py-2 text-sm bg-slate-700 hover:bg-slate-600 rounded-lg transition">
+                        👁️ Посмотреть код
+                    </button>
+                    <button onclick="copyCommand()" class="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-500 rounded-lg transition font-medium">
+                        📋 Копировать
+                    </button>
+                </div>
+            </div>
+            
+            <div class="relative">
+                <pre id="commandDisplay" class="cmd-box bg-black/50 p-4 rounded-lg text-sm text-emerald-400 overflow-x-auto whitespace-pre-wrap break-all">irm "<span id="cmdUrl"></span>" | iex</pre>
+                <div id="copyToast" class="absolute top-2 right-2 bg-emerald-500 text-white text-xs px-2 py-1 rounded opacity-0 transition-opacity pointer-events-none">Скопировано!</div>
+            </div>
+
+            <!-- Code Preview Modal (Hidden by default) -->
+            <div id="codePreview" class="hidden mt-4 max-h-60 overflow-y-auto bg-black/80 rounded-lg p-4 text-xs text-slate-300 cmd-box border border-slate-700"></div>
+        </div>
+    </div>
+
+<script>
+let allPrograms = [];
+let selectedIds = new Set();
+
+// Инициализация
+document.addEventListener('DOMContentLoaded', async () => {
+    await loadPrograms();
+    updateCommand();
+    
+    document.getElementById('search').addEventListener('input', renderPrograms);
+    document.getElementById('diskSelect').addEventListener('change', handleDiskChange);
+    document.getElementById('customPath').addEventListener('input', updateCommand);
+});
+
+async function loadPrograms() {
+    try {
+        const res = await fetch('/api/programs');
+        allPrograms = await res.json();
+        renderPrograms();
+    } catch (e) {
+        console.error('Failed to load programs', e);
+    }
+}
+
+function renderPrograms() {
+    const query = document.getElementById('search').value.toLowerCase();
+    const grid = document.getElementById('programsGrid');
+    grid.innerHTML = '';
+
+    // Поля программ приходят из базы и могут содержать что угодно, поэтому
+    // строим разметку через DOM API: textContent/атрибуты не исполняют HTML.
+    const filtered = allPrograms.filter(p => String(p.name || '').toLowerCase().includes(query));
+
+    // Группировка по категориям
+    const groups = {};
+    filtered.forEach(p => {
+        const cat = p.category || 'Без категории';
+        if (!groups[cat]) groups[cat] = [];
+        groups[cat].push(p);
+    });
+
+    Object.entries(groups).forEach(([cat, progs]) => {
+        const catHeader = document.createElement('div');
+        catHeader.className = 'col-span-full text-xs font-bold text-slate-500 uppercase tracking-wider mt-4 mb-2 first:mt-0';
+        catHeader.textContent = cat;
+        grid.appendChild(catHeader);
+
+        progs.forEach(p => {
+            const isChecked = selectedIds.has(p.id);
+
+            const card = document.createElement('label');
+            card.className = `flex items-start gap-3 p-4 rounded-xl border cursor-pointer transition-all ${isChecked ? 'bg-blue-900/30 border-blue-500 ring-1 ring-blue-500' : 'bg-slate-800 border-slate-700 hover:border-slate-600'}`;
+
+            const checkbox = document.createElement('input');
+            checkbox.type = 'checkbox';
+            checkbox.className = 'mt-1 accent-blue-500 w-4 h-4';
+            checkbox.checked = isChecked;
+            checkbox.addEventListener('change', () => toggleProgram(p.id));
+            card.appendChild(checkbox);
+
+            const icon = document.createElement('img');
+            icon.src = p.icon || 'https://via.placeholder.com/40';
+            icon.className = 'w-10 h-10 rounded object-contain bg-white/10 p-1';
+            icon.alt = '';
+            icon.addEventListener('error', () => { icon.src = 'https://via.placeholder.com/40'; });
+            card.appendChild(icon);
+
+            const info = document.createElement('div');
+            const nameEl = document.createElement('div');
+            nameEl.className = 'font-medium';
+            nameEl.textContent = p.name || '';
+            info.appendChild(nameEl);
+
+            const modeEl = document.createElement('div');
+            modeEl.className = 'text-xs text-slate-400 mt-1 truncate max-w-[150px]';
+            modeEl.title = p.args || '';
+            modeEl.textContent = p.args ? '🔧 Тихая установка' : '⚠️ Ручная настройка';
+            info.appendChild(modeEl);
+
+            card.appendChild(info);
+            grid.appendChild(card);
+        });
+    });
+}
+
+function toggleProgram(id) {
+    if (selectedIds.has(id)) selectedIds.delete(id);
+    else selectedIds.add(id);
+    renderPrograms(); // Перерисовка для обновления стилей
+    updateCommand();
+}
+
+function handleDiskChange(e) {
+    const custom = document.getElementById('customPath');
+    if (e.target.value === 'custom') {
+        custom.classList.remove('hidden');
+        custom.focus();
+    } else {
+        custom.classList.add('hidden');
+    }
+    updateCommand();
+}
+
+function getPath() {
+    const disk = document.getElementById('diskSelect').value;
+    return disk === 'custom' ? (document.getElementById('customPath').value || 'C:\\Programs') : disk;
+}
+
+function updateCommand() {
+    const origin = window.location.origin;
+    const ids = Array.from(selectedIds).join(',');
+    const path = getPath();
+    
+    const url = ids ? `${origin}/run?ids=${encodeURIComponent(ids)}&path=${encodeURIComponent(path)}` : `${origin}/run?ids=&path=`;
+    document.getElementById('cmdUrl').textContent = url;
+    
+    // Сброс превью кода при изменении параметров
+    document.getElementById('codePreview').classList.add('hidden');
+}
+
+async function copyCommand() {
+    const text = `irm "${document.getElementById('cmdUrl').textContent}" | iex`;
+    await navigator.clipboard.writeText(text);
+    const toast = document.getElementById('copyToast');
+    toast.style.opacity = '1';
+    setTimeout(() => toast.style.opacity = '0', 2000);
+}
+
+async function toggleCode() {
+    const preview = document.getElementById('codePreview');
+
+    if (!preview.classList.contains('hidden')) {
+        preview.classList.add('hidden');
+        return;
+    }
+
+    if (selectedIds.size === 0) {
+        alert('Сначала выберите хотя бы одну программу из списка.');
+        return;
+    }
+
+    const url = document.getElementById('cmdUrl').textContent;
+    preview.textContent = '⏳ Загрузка скрипта...';
+    preview.classList.remove('hidden');
+
+    try {
+        const res = await fetch(url);
+        const text = await res.text();
+
+        if (text.includes('[ERROR]')) {
+            preview.textContent = text;
+            preview.classList.add('text-red-400');
+        } else {
+            preview.textContent = text;
+            preview.classList.remove('text-red-400');
+        }
+    } catch (e) {
+        preview.textContent = '❌ Ошибка сети при загрузке скрипта';
+        preview.classList.add('text-red-400');
+    }
+}
+</script>
+</body>
+</html>

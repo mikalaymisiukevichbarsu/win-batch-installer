@@ -1,0 +1,65 @@
+/* ==========================================================================
+   Win Batch Installer — дополнительные стили
+   Подключать ПОСЛЕ CDN Tailwind: <link rel="stylesheet" href="/style.css">
+   Стили дублируют инлайн-блок из index.html и добавляют мелкие улучшения.
+   ========================================================================== */
+
+/* --- Моноширинный вывод команды и превью скрипта (было inline в index.html) --- */
+.cmd-box {
+    font-family: 'Consolas', 'Monaco', monospace;
+}
+
+/* --- Скрытие элементов до инициализации (было inline в index.html) --- */
+[x-cloak] {
+    display: none !important;
+}
+
+/* --- Поля ввода админ-панели --- */
+.admin-input::placeholder {
+    color: #64748b;
+}
+
+/* --- Аккуратные скроллбары для тёмной темы --- */
+::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+}
+
+::-webkit-scrollbar-track {
+    background: rgba(15, 23, 42, 0.6);
+}
+
+::-webkit-scrollbar-thumb {
+    background: #475569;
+    border-radius: 6px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+}
+
+/* --- Иконки программ в карточках --- */
+#programsGrid img {
+    object-fit: contain;
+}
+
+/* --- Кнопки: единый фокус для клавиатуры --- */
+button:focus-visible,
+a:focus-visible,
+select:focus-visible,
+input:focus-visible {
+    outline: 2px solid #3b82f6;
+    outline-offset: 2px;
+}
+
+/* --- Печать: убираем тёмный фон и плавающую панель --- */
+@media print {
+    body {
+        background: #fff !important;
+        color: #000 !important;
+    }
+
+    .sticky {
+        position: static !important;
+    }
+}
