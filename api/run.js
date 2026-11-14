@@ -17,8 +17,8 @@ export default async function handler(req, res) {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
 
     const xaml = `
-<Window xmlns="http://microsoft.com"
-        xmlns:x="http://microsoft.com"
+<Window xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="Win Batch Installer" Height="650" Width="600"
         WindowStartupLocation="CenterScreen" ResizeMode="NoResize"
         Background="#1e1e1e" Foreground="White" FontFamily="Segoe UI">
