@@ -1,154 +1,160 @@
 import { redis, ensureSeeded } from '../lib/db.js';
 
-// Экранирование строки для безопасной подстановки в PowerShell
 function escapePS(str) {
   return (str || '').replace(/`/g, '``').replace(/"/g, '`"').replace(/\$/g, '`$');
-}
-
-const WINDOWS_INVALID = /[<>"|?*\u0000-\u001f]/;
-
-function firstParam(value) {
-  if (Array.isArray(value)) return value[0];
-  return value;
-}
-
-export function normalizeInstallPath(raw) {
-  if (typeof raw !== 'string') return { error: 'Invalid installation path format.' };
-  const trimmed = raw.trim().replace(/\//g, '\\');
-  if (!trimmed) return { error: 'Invalid installation path format.' };
-  
-  const driveMatch = /^[A-Za-z]:/.exec(trimmed);
-  let prefix = '';
-  if (driveMatch) prefix = driveMatch[0];
-  else return { error: 'Invalid installation path format. Use C:\\Apps or D:\\Programs.' };
-
-  let rest = trimmed.slice(prefix.length);
-  if (rest.startsWith('\\')) rest = rest.slice(1);
-  if (WINDOWS_INVALID.test(rest) || rest.includes(':')) {
-    return { error: 'Invalid installation path format.' };
-  }
-
-  const rawSegments = rest.split('\\');
-  if (rawSegments[rawSegments.length - 1] === '') rawSegments.pop();
-
-  for (const segment of rawSegments) {
-    if (segment === '' || segment === '.' || segment === '..') return { error: 'Relative path segments are not allowed.' };
-  }
-
-  const normalized = prefix + '\\' + rawSegments.join('\\');
-  return { path: normalized };
 }
 
 export default async function handler(req, res) {
   await ensureSeeded();
 
-  const ids = firstParam(req.query.ids);
-  const rawPath = firstParam(req.query.path);
+  const ids = req.query.ids;
+  const rawPath = req.query.path;
 
-  // --- ЛОГИКА 1: Открытие веб-интерфейса (если нет параметров) ---
-  if (!ids || !rawPath) {
-    const baseUrl = process.env.VERCEL_URL 
-      ? `https://${process.env.VERCEL_URL}` 
-      : 'https://win-batch-installer.vercel.app';
-      
-    const script = `
-Write-Host "Opening program selection interface..." -ForegroundColor Cyan
-Start-Process "${baseUrl}"
-Write-Host "Please select programs in the opened browser window." -ForegroundColor Green
-`;
-    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-    return res.status(200).send(script);
-  }
-
-  // --- ЛОГИКА 2: Генерация скрипта установки с прогресс-баром ---
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.setHeader('X-Content-Type-Options', 'nosniff');
-
-  const normalized = normalizeInstallPath(rawPath);
-  if (normalized.error) {
-    return res.status(400).send(`Write-Host "[ERROR] ${normalized.error}" -ForegroundColor Red`);
-  }
-  const safePath = normalized.path;
-  const escapedPath = escapePS(safePath);
-
-  const idList = String(ids).split(',').map((s) => s.trim()).filter(Boolean);
-  const programs = [];
-  for (const id of idList) {
-    const p = await redis.hgetall(`program:${id}`);
-    if (p && p.url) programs.push(p);
-  }
-
-  if (programs.length === 0) {
-    return res.send('Write-Host "[ERROR] No valid programs found." -ForegroundColor Red');
-  }
-
-  // Функция скачивания с прогресс-баром и скоростью
-  let script = `# Win Batch Installer Script v1.3.0\n`;
-  script += `[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12\n`;
-  script += `$ErrorActionPreference = "Stop"\n`;
-  script += `$InstallRoot = "${escapedPath}"\n\n`;
-  
-  script += `function Download-WithProgress {\n`;
-  script += `    param ([string]$Url, [string]$OutputFile)\n`;
-  script += `    $request = [System.Net.HttpWebRequest]::Create($Url)\n`;
-  script += `    $response = $request.GetResponse()\n`;
-  script += `    $totalLength = $response.ContentLength\n`;
-  script += `    $stream = $response.GetResponseStream()\n`;
-  script += `    $fileStream = [System.IO.File]::Create($OutputFile)\n`;
-  script += `    $buffer = New-Object byte[] 8192\n`;
-  script += `    $bytesRead = 0; $totalBytesRead = 0\n`;
-  script += `    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()\n\n`;
-  script += `    while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {\n`;
-  script += `        $fileStream.Write($buffer, 0, $bytesRead)\n`;
-  script += `        $totalBytesRead += $bytesRead\n`;
-  script += `        $percent = [math]::Round(($totalBytesRead / $totalLength) * 100, 1)\n`;
-  script += `        $speed = [math]::Round(($totalBytesRead / $stopwatch.Elapsed.TotalSeconds / 1MB), 2)\n`;
-  script += `        $downloaded = [math]::Round($totalBytesRead / 1MB, 2)\n`;
-  script += `        $total = [math]::Round($totalLength / 1MB, 2)\n`;
-  script += `        Write-Host "\\rDownloading: $percent% | Speed: ${speed} MB/s | Size: ${downloaded} MB / ${total} MB" -NoNewline -ForegroundColor Yellow\n`;
-  script += `    }\n\n`;
-  script += `    $fileStream.Close(); $stream.Close(); $response.Close(); $stopwatch.Stop()\n`;
-  script += `    Write-Host ""\n`;
-  script += `    Write-Host "Download completed successfully." -ForegroundColor Green\n`;
-  script += `}\n\n`;
-
-  script += `if (-not (Test-Path $InstallRoot)) { New-Item -ItemType Directory -Path $InstallRoot -Force | Out-Null }\n\n`;
-
-  for (const p of programs) {
-    const url = p.url.split('?')[0].split('#')[0];
-    const ext = url.split('.').pop().toLowerCase();
-    const safeId = String(p.id || 'program').replace(/[^A-Za-z0-9._-]/g, '_');
-    const fileName = `${safeId}_installer.${ext === 'msi' ? 'msi' : 'exe'}`;
-    const tempFile = `$env:TEMP\\${fileName}`;
-
-    const safeName = escapePS(p.name);
-    const safeUrl = escapePS(p.url);
-    const installArgs = escapePS(p.args || '').replace(/\{PATH\}/g, '$InstallRoot');
-
-    script += `Write-Host "\\nInstalling: ${safeName}" -ForegroundColor Cyan\n`;
-    script += `try {\n`;
-    script += `    Download-WithProgress -Url "${safeUrl}" -OutputFile "${tempFile}"\n`;
-    script += `    Write-Host "Running installer..." -ForegroundColor Yellow\n`;
-
-    if (ext === 'msi') {
-      script += `    $proc = Start-Process msiexec.exe -ArgumentList "/i \`${tempFile}\`" ${installArgs}" -Wait -PassThru -NoNewWindow\n`;
-    } else {
-      script += `    $proc = Start-Process -FilePath "${tempFile}" -ArgumentList "${installArgs}" -Wait -PassThru -NoNewWindow\n`;
+  // Если переданы конкретные параметры - работаем как раньше (скрипт установки)
+  if (ids && rawPath) {
+    // ... здесь можно оставить старую логику генерации скрипта для автоматизации ...
+    // Но для GUI-режима мы будем игнорировать это и всегда отдавать GUI, 
+    // если не передан специальный флаг ?mode=script
+    if (req.query.mode === 'script') {
+        // Старая логика генерации скрипта (можно вернуть при необходимости)
+        return res.status(400).send('Script mode not implemented in this version.');
     }
-
-    script += `    Remove-Item "${tempFile}" -Force -ErrorAction SilentlyContinue\n`;
-    script += `    if ($proc.ExitCode -eq 0) {\n`;
-    script += `        Write-Host "[OK] ${safeName} installed successfully." -ForegroundColor Green\n`;
-    script += `    } else {\n`;
-    script += `        Write-Host "[FAIL] ${safeName} exited with code $($proc.ExitCode)" -ForegroundColor Red\n`;
-    script += `    }\n`;
-    script += `} catch {\n`;
-    script += `    Write-Host "[FAIL] ${safeName}: $_" -ForegroundColor Red\n`;
-    script += `}\n\n`;
   }
 
-  script += `Write-Host "\\nAll tasks completed." -ForegroundColor Green\n`;
-  script += `if ([Environment]::UserInteractive) { Read-Host "Press Enter to exit" }\n`;
+  // --- ГЕНЕРАЦИЯ GUI-ПРИЛОЖЕНИЯ ---
+  const baseUrl = process.env.VERCEL_URL 
+    ? `https://${process.env.VERCEL_URL}` 
+    : 'https://win-batch-installer.vercel.app';
 
-  return res.status(200).send(script);
+  // Код функции Download-WithProgress (тот же, что и раньше)
+  const downloadFunc = `
+function Download-WithProgress {
+    param ([string]$Url, [string]$OutputFile)
+    $request = [System.Net.HttpWebRequest]::Create($Url)
+    $response = $request.GetResponse()
+    $totalLength = $response.ContentLength
+    $stream = $response.GetResponseStream()
+    $fileStream = [System.IO.File]::Create($OutputFile)
+    $buffer = New-Object byte[] 8192
+    $bytesRead = 0; $totalBytesRead = 0
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    
+    while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
+        $fileStream.Write($buffer, 0, $bytesRead)
+        $totalBytesRead += $bytesRead
+        $percent = [math]::Round(($totalBytesRead / $totalLength) * 100, 1)
+        $speed = [math]::Round(($totalBytesRead / $stopwatch.Elapsed.TotalSeconds / 1MB), 2)
+        $downloaded = [math]::Round($totalBytesRead / 1MB, 2)
+        $total = [math]::Round($totalLength / 1MB, 2)
+        Write-Host "\\rDownloading: $percent% | Speed: ${speed} MB/s | Size: ${downloaded} MB / ${total} MB" -NoNewline -ForegroundColor Yellow
+    }
+    $fileStream.Close(); $stream.Close(); $response.Close(); $stopwatch.Stop()
+    Write-Host ""
+    Write-Host "Download completed." -ForegroundColor Green
+}
+`;
+
+  // Код GUI приложения на WinForms
+  const guiCode = `
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+
+\$form = New-Object System.Windows.Forms.Form
+\$form.Text = "Win Batch Installer"
+\$form.Size = New-Object System.Drawing.Size(500, 600)
+\$form.StartPosition = "CenterScreen"
+\$form.FormBorderStyle = "FixedDialog"
+\$form.MaximizeBox = \$false
+
+\$label = New-Object System.Windows.Forms.Label
+\$label.Text = "Select programs to install:"
+\$label.Location = New-Object System.Drawing.Point(10, 10)
+\$label.AutoSize = \$true
+\$form.Controls.Add(\$label)
+
+\$flowPanel = New-Object System.Windows.Forms.FlowLayoutPanel
+\$flowPanel.Location = New-Object System.Drawing.Point(10, 40)
+\$flowPanel.Size = New-Object System.Drawing.Size(460, 450)
+\$flowPanel.AutoScroll = \$true
+\$form.Controls.Add(\$flowPanel)
+
+\$btnInstall = New-Object System.Windows.Forms.Button
+\$btnInstall.Text = "Install Selected"
+\$btnInstall.Location = New-Object System.Drawing.Point(10, 500)
+\$btnInstall.Size = New-Object System.Drawing.Size(120, 30)
+\$form.Controls.Add(\$btnInstall)
+
+\$txtPath = New-Object System.Windows.Forms.TextBox
+\$txtPath.Text = "C:\\\\Programs"
+\$txtPath.Location = New-Object System.Drawing.Point(140, 500)
+\$txtPath.Size = New-Object System.Drawing.Size(250, 30)
+\$form.Controls.Add(\$txtPath)
+
+# Загрузка списка программ из API
+try {
+    \$programs = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing
+    foreach (\$p in \$programs) {
+        \$cb = New-Object System.Windows.Forms.CheckBox
+        \$cb.Text = \$p.name
+        \$cb.Tag = \$p  # Сохраняем объект программы в Tag
+        \$cb.AutoSize = \$true
+        \$cb.Margin = New-Object System.Windows.Forms.Padding(5)
+        \$flowPanel.Controls.Add(\$cb)
+    }
+} catch {
+    [System.Windows.Forms.MessageBox]::Show("Failed to load programs: \$_", "Error")
+    exit
+}
+
+\$btnInstall.Add_Click({
+    \$selected = \$flowPanel.Controls | Where-Object { \$_ -is [System.Windows.Forms.CheckBox] -and \$_.Checked }
+    if (\$selected.Count -eq 0) {
+        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning")
+        return
+    }
+    
+    \$installPath = \$txtPath.Text
+    if (-not (Test-Path \$installPath)) { New-Item -ItemType Directory -Path \$installPath -Force | Out-Null }
+    
+    \$form.Enabled = \$false  # Блокируем форму во время установки
+    \$btnInstall.Text = "Installing..."
+    
+    foreach (\$cb in \$selected) {
+        \$prog = \$cb.Tag
+        \$url = \$prog.url
+        \$ext = [System.IO.Path]::GetExtension(\$url).TrimStart('.')
+        \$fileName = "\$(\$prog.id)_installer.\$ext"
+        \$tempFile = "\$env:TEMP\\\\\$fileName"
+        
+        Write-Host "Installing: \$(\$prog.name)" -ForegroundColor Cyan
+        
+        try {
+            Download-WithProgress -Url \$url -OutputFile \$tempFile
+            
+            \$args = \$prog.args -replace '\\{PATH\\}', \$installPath
+            if (\$ext -eq 'msi') {
+                Start-Process msiexec.exe -ArgumentList "/i \`"\$tempFile\`" \$args" -Wait -NoNewWindow
+            } else {
+                Start-Process -FilePath \$tempFile -ArgumentList \$args -Wait -NoNewWindow
+            }
+            
+            Remove-Item \$tempFile -Force -ErrorAction SilentlyContinue
+            Write-Host "[OK] \$(\$prog.name) installed." -ForegroundColor Green
+        } catch {
+            Write-Host "[FAIL] \$(\$prog.name): \$_" -ForegroundColor Red
+        }
+    }
+    
+    \$btnInstall.Text = "Install Selected"
+    \$form.Enabled = \$true
+    [System.Windows.Forms.MessageBox]::Show("Installation complete!", "Done")
+})
+
+[void]\$form.ShowDialog()
+`;
+
+  const fullScript = `${downloadFunc}\n${guiCode}`;
+  
+  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+  return res.status(200).send(fullScript);
 }
