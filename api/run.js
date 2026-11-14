@@ -1,160 +1,148 @@
 import { redis, ensureSeeded } from '../lib/db.js';
 
-function escapePS(str) {
-  return (str || '').replace(/`/g, '``').replace(/"/g, '`"').replace(/\$/g, '`$');
-}
-
 export default async function handler(req, res) {
   await ensureSeeded();
 
-  const ids = req.query.ids;
-  const rawPath = req.query.path;
-
-  // Если переданы конкретные параметры - работаем как раньше (скрипт установки)
-  if (ids && rawPath) {
-    // ... здесь можно оставить старую логику генерации скрипта для автоматизации ...
-    // Но для GUI-режима мы будем игнорировать это и всегда отдавать GUI, 
-    // если не передан специальный флаг ?mode=script
-    if (req.query.mode === 'script') {
-        // Старая логика генерации скрипта (можно вернуть при необходимости)
-        return res.status(400).send('Script mode not implemented in this version.');
-    }
-  }
-
-  // --- ГЕНЕРАЦИЯ GUI-ПРИЛОЖЕНИЯ ---
   const baseUrl = process.env.VERCEL_URL 
     ? `https://${process.env.VERCEL_URL}` 
     : 'https://win-batch-installer.vercel.app';
 
-  // Код функции Download-WithProgress (тот же, что и раньше)
-  const downloadFunc = `
-function Download-WithProgress {
-    param ([string]$Url, [string]$OutputFile)
-    $request = [System.Net.HttpWebRequest]::Create($Url)
-    $response = $request.GetResponse()
-    $totalLength = $response.ContentLength
-    $stream = $response.GetResponseStream()
-    $fileStream = [System.IO.File]::Create($OutputFile)
-    $buffer = New-Object byte[] 8192
-    $bytesRead = 0; $totalBytesRead = 0
-    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
-    
-    while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {
-        $fileStream.Write($buffer, 0, $bytesRead)
-        $totalBytesRead += $bytesRead
-        $percent = [math]::Round(($totalBytesRead / $totalLength) * 100, 1)
-        $speed = [math]::Round(($totalBytesRead / $stopwatch.Elapsed.TotalSeconds / 1MB), 2)
-        $downloaded = [math]::Round($totalBytesRead / 1MB, 2)
-        $total = [math]::Round($totalLength / 1MB, 2)
-        Write-Host "\\rDownloading: $percent% | Speed: ${speed} MB/s | Size: ${downloaded} MB / ${total} MB" -NoNewline -ForegroundColor Yellow
-    }
-    $fileStream.Close(); $stream.Close(); $response.Close(); $stopwatch.Stop()
-    Write-Host ""
-    Write-Host "Download completed." -ForegroundColor Green
-}
-`;
+  // Собираем скрипт по частям, чтобы избежать проблем с экранированием ${} и \
+  const lines = [];
 
-  // Код GUI приложения на WinForms
-  const guiCode = `
-Add-Type -AssemblyName System.Windows.Forms
-Add-Type -AssemblyName System.Drawing
+  // 1. Функция скачивания с прогрессом
+  lines.push(`function Download-WithProgress {`);
+  lines.push(`    param ([string]$Url, [string]$OutputFile)`);
+  lines.push(`    $request = [System.Net.HttpWebRequest]::Create($Url)`);
+  lines.push(`    $response = $request.GetResponse()`);
+  lines.push(`    $totalLength = $response.ContentLength`);
+  lines.push(`    $stream = $response.GetResponseStream()`);
+  lines.push(`    $fileStream = [System.IO.File]::Create($OutputFile)`);
+  lines.push(`    $buffer = New-Object byte[] 8192`);
+  lines.push(`    $bytesRead = 0; $totalBytesRead = 0`);
+  lines.push(`    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()`);
+  lines.push(`    while (($bytesRead = $stream.Read($buffer, 0, $buffer.Length)) -gt 0) {`);
+  lines.push(`        $fileStream.Write($buffer, 0, $bytesRead)`);
+  lines.push(`        $totalBytesRead += $bytesRead`);
+  lines.push(`        $percent = [math]::Round(($totalBytesRead / $totalLength) * 100, 1)`);
+  lines.push(`        $speed = [math]::Round(($totalBytesRead / $stopwatch.Elapsed.TotalSeconds / 1MB), 2)`);
+  lines.push(`        $downloaded = [math]::Round($totalBytesRead / 1MB, 2)`);
+  lines.push(`        $total = [math]::Round($totalLength / 1MB, 2)`);
+  lines.push(`        Write-Host "\\rDownloading: $percent% | Speed: ${speed} MB/s | Size: ${downloaded} MB / ${total} MB" -NoNewline -ForegroundColor Yellow`);
+  lines.push(`    }`);
+  lines.push(`    $fileStream.Close(); $stream.Close(); $response.Close(); $stopwatch.Stop()`);
+  lines.push(`    Write-Host ""`);
+  lines.push(`    Write-Host "Download completed." -ForegroundColor Green`);
+  lines.push(`}`);
+  lines.push(``);
 
-\$form = New-Object System.Windows.Forms.Form
-\$form.Text = "Win Batch Installer"
-\$form.Size = New-Object System.Drawing.Size(500, 600)
-\$form.StartPosition = "CenterScreen"
-\$form.FormBorderStyle = "FixedDialog"
-\$form.MaximizeBox = \$false
+  // 2. Загрузка сборок WinForms
+  lines.push(`Add-Type -AssemblyName System.Windows.Forms`);
+  lines.push(`Add-Type -AssemblyName System.Drawing`);
+  lines.push(``);
 
-\$label = New-Object System.Windows.Forms.Label
-\$label.Text = "Select programs to install:"
-\$label.Location = New-Object System.Drawing.Point(10, 10)
-\$label.AutoSize = \$true
-\$form.Controls.Add(\$label)
+  // 3. Создание формы
+  lines.push(`$form = New-Object System.Windows.Forms.Form`);
+  lines.push(`$form.Text = "Win Batch Installer"`);
+  lines.push(`$form.Size = New-Object System.Drawing.Size(500, 600)`);
+  lines.push(`$form.StartPosition = "CenterScreen"`);
+  lines.push(`$form.FormBorderStyle = "FixedDialog"`);
+  lines.push(`$form.MaximizeBox = $false`);
+  lines.push(``);
 
-\$flowPanel = New-Object System.Windows.Forms.FlowLayoutPanel
-\$flowPanel.Location = New-Object System.Drawing.Point(10, 40)
-\$flowPanel.Size = New-Object System.Drawing.Size(460, 450)
-\$flowPanel.AutoScroll = \$true
-\$form.Controls.Add(\$flowPanel)
+  // 4. Элементы управления
+  lines.push(`$label = New-Object System.Windows.Forms.Label`);
+  lines.push(`$label.Text = "Select programs to install:"`);
+  lines.push(`$label.Location = New-Object System.Drawing.Point(10, 10)`);
+  lines.push(`$label.AutoSize = $true`);
+  lines.push(`$form.Controls.Add($label)`);
+  lines.push(``);
 
-\$btnInstall = New-Object System.Windows.Forms.Button
-\$btnInstall.Text = "Install Selected"
-\$btnInstall.Location = New-Object System.Drawing.Point(10, 500)
-\$btnInstall.Size = New-Object System.Drawing.Size(120, 30)
-\$form.Controls.Add(\$btnInstall)
+  lines.push(`$flowPanel = New-Object System.Windows.Forms.FlowLayoutPanel`);
+  lines.push(`$flowPanel.Location = New-Object System.Drawing.Point(10, 40)`);
+  lines.push(`$flowPanel.Size = New-Object System.Drawing.Size(460, 450)`);
+  lines.push(`$flowPanel.AutoScroll = $true`);
+  lines.push(`$form.Controls.Add($flowPanel)`);
+  lines.push(``);
 
-\$txtPath = New-Object System.Windows.Forms.TextBox
-\$txtPath.Text = "C:\\\\Programs"
-\$txtPath.Location = New-Object System.Drawing.Point(140, 500)
-\$txtPath.Size = New-Object System.Drawing.Size(250, 30)
-\$form.Controls.Add(\$txtPath)
+  lines.push(`$txtPath = New-Object System.Windows.Forms.TextBox`);
+  lines.push(`$txtPath.Text = "C:\\Programs"`);
+  lines.push(`$txtPath.Location = New-Object System.Drawing.Point(10, 500)`);
+  lines.push(`$txtPath.Size = New-Object System.Drawing.Size(300, 30)`);
+  lines.push(`$form.Controls.Add($txtPath)`);
+  lines.push(``);
 
-# Загрузка списка программ из API
-try {
-    \$programs = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing
-    foreach (\$p in \$programs) {
-        \$cb = New-Object System.Windows.Forms.CheckBox
-        \$cb.Text = \$p.name
-        \$cb.Tag = \$p  # Сохраняем объект программы в Tag
-        \$cb.AutoSize = \$true
-        \$cb.Margin = New-Object System.Windows.Forms.Padding(5)
-        \$flowPanel.Controls.Add(\$cb)
-    }
-} catch {
-    [System.Windows.Forms.MessageBox]::Show("Failed to load programs: \$_", "Error")
-    exit
-}
+  lines.push(`$btnInstall = New-Object System.Windows.Forms.Button`);
+  lines.push(`$btnInstall.Text = "Install Selected"`);
+  lines.push(`$btnInstall.Location = New-Object System.Drawing.Point(320, 500)`);
+  lines.push(`$btnInstall.Size = New-Object System.Drawing.Size(150, 30)`);
+  lines.push(`$form.Controls.Add($btnInstall)`);
+  lines.push(``);
 
-\$btnInstall.Add_Click({
-    \$selected = \$flowPanel.Controls | Where-Object { \$_ -is [System.Windows.Forms.CheckBox] -and \$_.Checked }
-    if (\$selected.Count -eq 0) {
-        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning")
-        return
-    }
-    
-    \$installPath = \$txtPath.Text
-    if (-not (Test-Path \$installPath)) { New-Item -ItemType Directory -Path \$installPath -Force | Out-Null }
-    
-    \$form.Enabled = \$false  # Блокируем форму во время установки
-    \$btnInstall.Text = "Installing..."
-    
-    foreach (\$cb in \$selected) {
-        \$prog = \$cb.Tag
-        \$url = \$prog.url
-        \$ext = [System.IO.Path]::GetExtension(\$url).TrimStart('.')
-        \$fileName = "\$(\$prog.id)_installer.\$ext"
-        \$tempFile = "\$env:TEMP\\\\\$fileName"
-        
-        Write-Host "Installing: \$(\$prog.name)" -ForegroundColor Cyan
-        
-        try {
-            Download-WithProgress -Url \$url -OutputFile \$tempFile
-            
-            \$args = \$prog.args -replace '\\{PATH\\}', \$installPath
-            if (\$ext -eq 'msi') {
-                Start-Process msiexec.exe -ArgumentList "/i \`"\$tempFile\`" \$args" -Wait -NoNewWindow
-            } else {
-                Start-Process -FilePath \$tempFile -ArgumentList \$args -Wait -NoNewWindow
-            }
-            
-            Remove-Item \$tempFile -Force -ErrorAction SilentlyContinue
-            Write-Host "[OK] \$(\$prog.name) installed." -ForegroundColor Green
-        } catch {
-            Write-Host "[FAIL] \$(\$prog.name): \$_" -ForegroundColor Red
-        }
-    }
-    
-    \$btnInstall.Text = "Install Selected"
-    \$form.Enabled = \$true
-    [System.Windows.Forms.MessageBox]::Show("Installation complete!", "Done")
-})
+  // 5. Загрузка программ из API
+  lines.push(`try {`);
+  lines.push(`    $programs = Invoke-RestMethod -Uri "${baseUrl}/api/programs" -UseBasicParsing`);
+  lines.push(`    foreach ($p in $programs) {`);
+  lines.push(`        $cb = New-Object System.Windows.Forms.CheckBox`);
+  lines.push(`        $cb.Text = $p.name`);
+  lines.push(`        $cb.Tag = $p`);
+  lines.push(`        $cb.AutoSize = $true`);
+  lines.push(`        $cb.Margin = New-Object System.Windows.Forms.Padding(5)`);
+  lines.push(`        $flowPanel.Controls.Add($cb)`);
+  lines.push(`    }`);
+  lines.push(`} catch {`);
+  lines.push(`    [System.Windows.Forms.MessageBox]::Show("Failed to load programs: $_", "Error")`);
+  lines.push(`    exit`);
+  lines.push(`}`);
+  lines.push(``);
 
-[void]\$form.ShowDialog()
-`;
+  // 6. Обработчик кнопки установки
+  lines.push(`$btnInstall.Add_Click({`);
+  lines.push(`    $selected = $flowPanel.Controls | Where-Object { $_ -is [System.Windows.Forms.CheckBox] -and $_.Checked }`);
+  lines.push(`    if ($selected.Count -eq 0) {`);
+  lines.push(`        [System.Windows.Forms.MessageBox]::Show("Please select at least one program.", "Warning")`);
+  lines.push(`        return`);
+  lines.push(`    }`);
+  lines.push(`    `);
+  lines.push(`    $installPath = $txtPath.Text`);
+  lines.push(`    if (-not (Test-Path $installPath)) { New-Item -ItemType Directory -Path $installPath -Force | Out-Null }`);
+  lines.push(`    `);
+  lines.push(`    $form.Enabled = $false`);
+  lines.push(`    $btnInstall.Text = "Installing..."`);
+  lines.push(`    `);
+  lines.push(`    foreach ($cb in $selected) {`);
+  lines.push(`        $prog = $cb.Tag`);
+  lines.push(`        $url = $prog.url`);
+  lines.push(`        $ext = [System.IO.Path]::GetExtension($url).TrimStart('.')`);
+  lines.push(`        $fileName = "$($prog.id)_installer.$ext"`);
+  lines.push(`        $tempFile = "$env:TEMP\\$fileName"`);
+  lines.push(`        `);
+  lines.push(`        Write-Host "Installing: $($prog.name)" -ForegroundColor Cyan`);
+  lines.push(`        try {`);
+  lines.push(`            Download-WithProgress -Url $url -OutputFile $tempFile`);
+  lines.push(`            $args = $prog.args -replace '\\{PATH\\}', $installPath`);
+  lines.push(`            if ($ext -eq 'msi') {`);
+  lines.push(`                Start-Process msiexec.exe -ArgumentList "/i \`"$tempFile\`" $args" -Wait -NoNewWindow`);
+  lines.push(`            } else {`);
+  lines.push(`                Start-Process -FilePath $tempFile -ArgumentList $args -Wait -NoNewWindow`);
+  lines.push(`            }`);
+  lines.push(`            Remove-Item $tempFile -Force -ErrorAction SilentlyContinue`);
+  lines.push(`            Write-Host "[OK] $($prog.name) installed." -ForegroundColor Green`);
+  lines.push(`        } catch {`);
+  lines.push(`            Write-Host "[FAIL] $($prog.name): $_" -ForegroundColor Red`);
+  lines.push(`        }`);
+  lines.push(`    }`);
+  lines.push(`    `);
+  lines.push(`    $btnInstall.Text = "Install Selected"`);
+  lines.push(`    $form.Enabled = $true`);
+  lines.push(`    [System.Windows.Forms.MessageBox]::Show("Installation complete!", "Done")`);
+  lines.push(`});`);
+  lines.push(``);
+  lines.push(`[void]$form.ShowDialog()`);
 
-  const fullScript = `${downloadFunc}\n${guiCode}`;
+  const script = lines.join('\n');
   
   res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  return res.status(200).send(fullScript);
+  res.setHeader('Cache-Control', 'no-store');
+  return res.status(200).send(script);
 }
